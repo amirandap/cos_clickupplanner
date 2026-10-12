@@ -1,0 +1,26 @@
+[Unit]
+Description=ClickUp and Google Calendar planner (PM2)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_ROOT__
+EnvironmentFile=__ENV_FILE__
+Environment=NEXT_TELEMETRY_DISABLED=1
+Environment=PM2_HOME=__STATE_DIR__/.pm2
+Environment=PLANNER_APP_ROOT=__APP_ROOT__
+ExecStart=/usr/bin/doppler run --project __DOPPLER_PROJECT__ --config __DOPPLER_CONFIG__ -- /usr/bin/pm2-runtime start __ECOSYSTEM_PATH__
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=__STATE_DIR__ __APP_ROOT__/.next/cache
+
+[Install]
+WantedBy=multi-user.target

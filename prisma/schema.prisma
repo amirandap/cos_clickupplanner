@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model ClickUpTask {
+  id            String   @id
+  title         String
+  status        String?
+  priority      String?
+  dueDate       DateTime?
+  estimateMin   Int?
+  url           String?
+  listId        String?
+  rawJson       Json?
+  remoteUpdated DateTime?
+  syncedAt      DateTime @default(now())
+
+  @@index([remoteUpdated])
+}
+
+model CalendarEvent {
+  id              String   @id
+  calendarId      String
+  title           String
+  startAt         DateTime
+  endAt           DateTime
+  clickupTaskId   String?
+  rawJson         Json?
+  remoteUpdated   DateTime?
+  syncedAt        DateTime @default(now())
+
+  @@index([clickupTaskId])
+  @@index([startAt, endAt])
+}
+
+model TaskEventLink {
+  id              String   @id @default(cuid())
+  clickupTaskId   String
+  calendarEventId String
+  createdAt       DateTime @default(now())
+  clickupSyncPending Boolean @default(false)
+  dueSyncedStartAt  DateTime?
+  commentedStartAt  DateTime?
+  clickupSyncError   String?
+
+  @@unique([clickupTaskId, calendarEventId])
+  @@index([calendarEventId])
+}
+
+model SyncState {
+  id         String   @id
+  source     String
+  cursor     String?
+  lastSyncAt DateTime?
+  updatedAt  DateTime @updatedAt
+}
+
+model OAuthCredential {
+  provider     String   @id
+  accessToken  String
+  refreshToken String?
+  expiresAt    DateTime?
+  updatedAt    DateTime @updatedAt
+}
