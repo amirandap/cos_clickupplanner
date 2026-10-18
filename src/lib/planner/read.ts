@@ -1,6 +1,7 @@
 import { db } from "@/lib/db/client";
 import type { PlannerAssignee, PlannerData } from "./types";
-import { appTimezone } from "./config";
+import { appTimezone, getConfiguredCalendarId, getConfiguredListIds } from "./config";
+import { expandCalendarEvents } from "../google/recurrences";
 
 function taskAssignees(rawJson: unknown): PlannerAssignee[] {
   if (!rawJson || typeof rawJson !== "object" || !("assignees" in rawJson) || !Array.isArray(rawJson.assignees)) return [];
@@ -26,18 +27,18 @@ export async function readPlanner(range?: { startAt: Date; endAt: Date }): Promi
   const defaultAssigneeId = process.env.CLICKUP_DEFAULT_ASSIGNEE_ID || null;
   const startAt = range?.startAt ?? new Date(Date.now() - 14 * 86400000);
   const endAt = range?.endAt ?? new Date(Date.now() + 14 * 86400000);
-  // Date-only Google events are cached at UTC midnight; widen the range for local time zones.
-  const queryStart = new Date(startAt.getTime() - 86400000);
-  const queryEnd = new Date(endAt.getTime() + 86400000);
-  const [tasks, events, links, syncStates] = await Promise.all([
-    db.clickUpTask.findMany({ where: process.env.USE_MOCK_DATA === "true" ? undefined : { NOT: { listId: "mock-list" } }, orderBy: [{ status: "asc" }, { dueDate: "asc" }, { title: "asc" }] }),
-    db.calendarEvent.findMany({ where: { AND: [
-      process.env.USE_MOCK_DATA === "true" ? {} : { NOT: { id: { startsWith: "mock-" } } },
-      { startAt: { lt: queryEnd }, endAt: { gt: queryStart } },
-    ] }, orderBy: { startAt: "asc" } }),
-    db.taskEventLink.findMany(),
-    db.syncState.findMany({ orderBy: { lastSyncAt: "desc" }, take: 1 }),
+  const mockMode = process.env.USE_MOCK_DATA === "true";
+  const selectedCalendar = getConfiguredCalendarId();
+  const [tasks, events, syncStates] = await Promise.all([
+    db.clickUpTask.findMany({ where: { listId: { in: mockMode ? ["mock-list"] : getConfiguredListIds() } }, orderBy: [{ status: "asc" }, { dueDate: "asc" }, { title: "asc" }] }),
+    // Masters and original-time exceptions may start outside the requested range.
+    // Read the selected calendar cache once and expand only the visible range.
+    db.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, orderBy: { startAt: "asc" } }),
+    db.syncState.findMany({ where: { id: { in: mockMode ? ["mock"] : [`google:${selectedCalendar}`, "clickup"] } }, orderBy: { lastSyncAt: "desc" }, take: 1 }),
   ]);
+  const links = await db.taskEventLink.findMany({ where: {
+    clickupTaskId: { in: tasks.map((task) => task.id) }, calendarEventId: { in: events.map((event) => event.id) },
+  } });
   const counts = new Map<string, number>();
   for (const link of links) counts.set(link.clickupTaskId, (counts.get(link.clickupTaskId) ?? 0) + 1);
   return {
@@ -48,19 +49,8 @@ export async function readPlanner(range?: { startAt: Date; endAt: Date }): Promi
       completed: (typeof task.rawJson === "object" && task.rawJson !== null && !Array.isArray(task.rawJson) && typeof task.rawJson.status === "object" && task.rawJson.status !== null && !Array.isArray(task.rawJson.status) && task.rawJson.status.type === "closed") || /^(complete|completed|done|closed|terminad|completad)/i.test(task.status ?? ""),
       assignees: taskAssignees(task.rawJson),
     })),
-    events: events.map((event) => {
-      const raw = event.rawJson as { start?: { date?: unknown }; end?: { date?: unknown }; extendedProperties?: { private?: { source?: string } } } | null;
-      const startDate = typeof raw?.start?.date === "string" ? raw.start.date : null;
-      const endDate = typeof raw?.end?.date === "string" ? raw.end.date : null;
-      return {
-        id: event.id, calendarId: event.calendarId, title: event.title,
-        startAt: event.startAt.toISOString(), endAt: event.endAt.toISOString(),
-        allDay: Boolean(startDate && endDate), startDate, endDate,
-        clickupTaskId: event.clickupTaskId,
-        plannerOwned: raw?.extendedProperties?.private?.source === "planner",
-      };
-    }),
-    mockMode: process.env.USE_MOCK_DATA === "true",
+    events: expandCalendarEvents(events, { startAt, endAt }),
+    mockMode,
     timezone: appTimezone(),
     defaultAssigneeId,
     lastSyncAt: syncStates[0]?.lastSyncAt?.toISOString() ?? null,

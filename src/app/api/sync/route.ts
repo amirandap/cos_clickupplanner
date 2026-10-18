@@ -1,24 +1,46 @@
 import { syncClickUp, syncGoogle } from "@/lib/sync/run";
 import { syncTaskSchedule } from "@/lib/planner/actions";
 import { db } from "@/lib/db/client";
-import { assertSameOrigin, OriginError } from "@/lib/planner/http";
+import { assertSameOrigin, apiFailure } from "@/lib/planner/http";
+import { getConfiguredCalendarId, getConfiguredListIds } from "@/lib/planner/config";
+import { withMutationLock } from "@/lib/planner/locking";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const clickup = await syncClickUp();
-    const google = await syncGoogle();
-    const pending = await db.taskEventLink.findMany({ where: { clickupSyncPending: true } });
-    const errors: string[] = [];
-    for (const link of pending) {
-      try { await syncTaskSchedule(link.clickupTaskId, link.calendarEventId); }
-      catch (error) { errors.push(error instanceof Error ? error.message : "Error al actualizar ClickUp"); }
-    }
-    if (errors.length) return Response.json({ error: `${errors.length} vínculo(s) siguen pendientes de actualizar en ClickUp. ${errors[0]}`, clickup, google }, { status: 502 });
-    return Response.json({ clickup, google, pending: 0 });
-  } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Error de sincronización" }, { status: error instanceof OriginError ? 403 : 502 });
-  }
+    return await withMutationLock("planner", async () => {
+      const clickup = await syncClickUp();
+      const google = await syncGoogle();
+      const [tasks, events] = await Promise.all([
+        db.clickUpTask.findMany({
+          where: { listId: { in: process.env.USE_MOCK_DATA === "true" ? ["mock-list"] : getConfiguredListIds() } },
+          select: { id: true },
+        }),
+        db.calendarEvent.findMany({ where: { calendarId: getConfiguredCalendarId() }, select: { id: true } }),
+      ]);
+      const pending = await db.taskEventLink.findMany({ where: {
+        clickupSyncPending: true,
+        clickupTaskId: { in: tasks.map((task) => task.id) },
+        calendarEventId: { in: events.map((event) => event.id) },
+      } });
+      const errors: string[] = [];
+      for (const link of pending) {
+        try {
+          const result = await syncTaskSchedule(link.clickupTaskId, link.calendarEventId);
+          if (result.clickupSyncPending) errors.push(result.warning ?? "ClickUp sigue pendiente de actualizar.");
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : "Error al actualizar ClickUp");
+        }
+      }
+      if (errors.length) {
+        return Response.json({
+          warning: `${errors.length} vínculo(s) siguen pendientes de actualizar en ClickUp. ${errors[0]}`,
+          clickup, google, pending: errors.length,
+        });
+      }
+      return Response.json({ clickup, google, pending: 0 });
+    });
+  } catch (error) { return apiFailure(error); }
 }

@@ -41,11 +41,12 @@ model CalendarEvent {
 model TaskEventLink {
   id              String   @id @default(cuid())
   clickupTaskId   String
-  calendarEventId String
+  calendarEventId String @unique
   createdAt       DateTime @default(now())
   clickupSyncPending Boolean @default(false)
   dueSyncedStartAt  DateTime?
   commentedStartAt  DateTime?
+  commentAttemptedStartAt DateTime?
   clickupSyncError   String?
 
   @@unique([clickupTaskId, calendarEventId])
@@ -66,4 +67,38 @@ model OAuthCredential {
   refreshToken String?
   expiresAt    DateTime?
   updatedAt    DateTime @updatedAt
+}
+
+// Durable request identity survives retries and deletion of the resulting event.
+model ScheduleOperation {
+  id              String   @id
+  payloadHash     String
+  calendarEventId String   @unique
+  calendarId      String
+  clickupTaskId   String
+  title           String
+  startAt         DateTime
+  endAt           DateTime
+  savedAt         DateTime?
+  createdAt       DateTime @default(now())
+}
+
+model MutationLease {
+  key       String   @id
+  owner     String
+  expiresAt DateTime
+}
+
+// Original conflicting links remain available for audit and recovery. Their
+// pending flag is also carried forward to the surviving canonical link.
+model TaskEventLinkConflict {
+  id                   String   @id
+  clickupTaskId         String
+  calendarEventId      String
+  createdAt            DateTime
+  clickupSyncPending   Boolean
+  dueSyncedStartAt     DateTime?
+  commentedStartAt     DateTime?
+  clickupSyncError     String?
+  archivedAt           DateTime @default(now())
 }

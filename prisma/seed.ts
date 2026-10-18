@@ -24,9 +24,9 @@ async function main() {
     });
   }
   const event = await db.calendarEvent.upsert({
-    where: { id: "mock-event-1" }, update: {},
+    where: { id: "mock-event-1" }, update: { calendarId: "mock-calendar" },
     create: {
-      id: "mock-event-1", calendarId: "primary", title: "Preparar reunión semanal",
+      id: "mock-event-1", calendarId: "mock-calendar", title: "Preparar reunión semanal",
       startAt: exampleDate(0, 10), endAt: exampleDate(0, 10, 45),
       clickupTaskId: "mock-102",
       rawJson: { extendedProperties: { private: { source: "planner", clickupTaskId: "mock-102" } } },

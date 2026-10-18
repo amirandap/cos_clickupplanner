@@ -31,6 +31,7 @@ export type PlannerEvent = {
   endDate: string | null;
   clickupTaskId: string | null;
   plannerOwned: boolean;
+  recurring: boolean;
 };
 
 export type PlannerData = {

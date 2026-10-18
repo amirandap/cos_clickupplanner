@@ -1,4 +1,5 @@
 import { readPlanner } from "@/lib/planner/read";
+import { apiFailure } from "@/lib/planner/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,5 +17,6 @@ export async function GET(request: Request) {
     }
     range = { startAt, endAt };
   }
-  return Response.json(await readPlanner(range), { headers: { "Cache-Control": "no-store" } });
+  try { return Response.json(await readPlanner(range), { headers: { "Cache-Control": "no-store" } }); }
+  catch (error) { return apiFailure(error); }
 }
