@@ -70,6 +70,11 @@ function normalizeLine(line: string, zone: string) {
   return `${match[1]}:${values.join(",")}`;
 }
 
+function calendarLink(row: CalendarEvent) {
+  if (row.id.startsWith("recurring:") || row.calendarId.startsWith("mock")) return null;
+  return `https://calendar.google.com/calendar/event?eid=${Buffer.from(`${row.id} ${row.calendarId}`).toString("base64url")}`;
+}
+
 function asPlannerEvent(row: CalendarEvent, recurring: boolean): PlannerEvent {
   const source = raw(row);
   const startDate = record(source.start) && typeof source.start.date === "string" ? source.start.date : null;
@@ -79,7 +84,7 @@ function asPlannerEvent(row: CalendarEvent, recurring: boolean): PlannerEvent {
     allDay: Boolean(startDate && endDate), startDate, endDate, clickupTaskId: row.clickupTaskId,
     plannerOwned: properties.source === "planner", recurring,
     hasMeet: typeof source.hangoutLink === "string" || (record(source.conferenceData) && Array.isArray(source.conferenceData.entryPoints)),
-    htmlLink: typeof source.htmlLink === "string" ? source.htmlLink : null,
+    htmlLink: typeof source.htmlLink === "string" ? source.htmlLink : calendarLink(row),
     location: typeof source.location === "string" && source.location.trim() ? source.location.trim() : null };
 }
 

@@ -454,6 +454,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       style={{ left: eventPeek.left, top: eventPeek.top }} role="tooltip"><strong>{eventPeek.title}</strong><span>{eventPeek.time}</span></div>}
     {selected && <EventModal event={selected} task={selectedTask} timezone={timezone} busy={busy} onClose={() => setSelected(null)}
       onReschedule={() => beginReschedule(selected)}
+      onDelete={() => { void run(() => requestJson("/api/planner/events", jsonRequest("DELETE", { id: selected.id, hard: true }), isMutationResult), closeSelection); }}
       onRename={(title) => { void run(() => requestJson("/api/planner/events", jsonRequest("PATCH", { id: selected.id, title }), isMutationResult), closeSelection); }}
       onComplete={() => { if (selectedTask) void run(() => requestJson("/api/planner/tasks", jsonRequest("PATCH", { id: selectedTask.id }), isMutationResult), closeSelection); }}
       onRemove={() => { void run(() => requestJson("/api/planner/events", jsonRequest("DELETE", { id: selected.id }), isMutationResult), closeSelection); }} />}

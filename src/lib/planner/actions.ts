@@ -244,6 +244,20 @@ export async function renameEvent(id: string, titleInput: unknown) {
   });
 }
 
+export async function deleteEvent(id: string) {
+  return withMutationLock("planner", async () => {
+    const event = await db.calendarEvent.findUnique({ where: { id } });
+    if (!event) invalid("Evento no encontrado", 404);
+    const raw = await assertEditable(event);
+    assertCurrentLink(event, raw);
+    await deleteRemoteEvent(event.id, event.calendarId, typeof raw.etag === "string" ? raw.etag : undefined);
+    await db.$transaction(async (tx) => {
+      await tx.taskEventLink.deleteMany({ where: { calendarEventId: id } });
+      await tx.calendarEvent.delete({ where: { id } });
+    });
+  });
+}
+
 export async function removeEvent(id: string) {
   return withMutationLock("planner", async () => {
     const event = await db.calendarEvent.findUnique({ where: { id } });

@@ -1,4 +1,4 @@
-import { scheduleTask, linkTaskToEvent, rescheduleEvent, renameEvent, removeEvent, validateOperationId } from "@/lib/planner/actions";
+import { scheduleTask, linkTaskToEvent, rescheduleEvent, renameEvent, removeEvent, deleteEvent, validateOperationId } from "@/lib/planner/actions";
 import { assertSameOrigin, apiFailure, HttpError } from "@/lib/planner/http";
 
 export const runtime = "nodejs";
@@ -33,7 +33,7 @@ export async function DELETE(request: Request) {
     assertSameOrigin(request);
     const body = await request.json();
     if (typeof body?.id !== "string" || !body.id.trim()) throw new HttpError(400, "Evento inválido");
-    await removeEvent(body.id);
+    if (body.hard === true) await deleteEvent(body.id); else await removeEvent(body.id);
     return Response.json({ ok: true });
   } catch (error) { return apiFailure(error); }
 }

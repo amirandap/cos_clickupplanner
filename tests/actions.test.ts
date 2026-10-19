@@ -177,3 +177,13 @@ test("renaming an event updates the stored title", async () => {
     await assert.rejects(() => f.actions.renameEvent("event", "   "));
   } finally { await f.cleanup(); }
 });
+
+test("deleting an event removes it and its link", async () => {
+  const f = await fixture();
+  try {
+    await f.event();
+    await f.actions.linkTaskToEvent("task-a", "event");
+    await f.actions.deleteEvent("event");
+    assert.equal(await f.db.calendarEvent.count({ where: { id: "event" } }), 0);
+  } finally { await f.cleanup(); }
+});

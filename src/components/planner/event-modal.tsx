@@ -13,9 +13,10 @@ type EventModalProps = {
   onRemove: () => void;
   onReschedule: () => void;
   onRename: (title: string) => void;
+  onDelete: () => void;
 };
 
-export function EventModal({ event, task, timezone, busy, onClose, onComplete, onRemove, onReschedule, onRename }: EventModalProps) {
+export function EventModal({ event, task, timezone, busy, onClose, onComplete, onRemove, onReschedule, onRename, onDelete }: EventModalProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(event.title);
   const canRename = !event.recurring && !busy;
@@ -87,6 +88,9 @@ export function EventModal({ event, task, timezone, busy, onClose, onComplete, o
           {task && <button className="modal-action destructive" disabled={busy} onClick={onRemove}>
             <Trash2 size={17} /> {event.plannerOwned ? "Quitar del calendario" : "Desvincular tarea"}
           </button>}
+          <button className="modal-action destructive" disabled={busy} onClick={() => { if (window.confirm("¿Eliminar este evento de Google Calendar?")) onDelete(); }}>
+            <Trash2 size={17} /> Eliminar de Google Calendar
+          </button>
         </>}
       </div>
     </div>
