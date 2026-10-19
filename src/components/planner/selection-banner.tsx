@@ -29,7 +29,7 @@ export function SelectionBanner({ taskTitle, timezone, inputRef, dateTimeInput, 
         onChange={(event) => onEvent(event.target.value)}>
         <option value="">Crear bloque nuevo</option>
         {linkEvents.map((event) => <option key={event.id} value={event.id}>
-          {event.title} · {DateTime.fromISO(event.startAt).setZone(timezone).setLocale("es").toFormat("ccc d LLL HH:mm")}
+          {event.title} · {DateTime.fromISO(event.startAt).setZone(timezone).setLocale("es").toFormat("ccc d LLL h:mm a")}
         </option>)}
       </select>}
       <input ref={inputRef} aria-label="Fecha y hora del bloque" type="datetime-local" value={dateTimeInput}

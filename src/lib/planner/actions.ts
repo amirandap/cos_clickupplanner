@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { db } from "@/lib/db/client";
 import { appTimezone, assertCalendarInScope, assertTaskInScope } from "@/lib/planner/config";
 import { withMutationLock } from "@/lib/planner/locking";
+import { syncClickUp } from "@/lib/sync/run";
 import { toJson } from "@/lib/db/json";
 import { googleEventDate } from "@/lib/google/validation";
-import { createRemoteEvent, deleteRemoteEvent, getRemoteEvent, linkRemoteEvent, unlinkRemoteEvent, updateRemoteEvent, calendarId } from "@/lib/google/calendar";
+import { createRemoteEvent, deleteRemoteEvent, getRemoteEvent, linkRemoteEvent, renameRemoteEvent, unlinkRemoteEvent, updateRemoteEvent, calendarId } from "@/lib/google/calendar";
 import type { RemoteCalendarEvent } from "@/lib/google/calendar";
-import { completeRemoteTask, createRemoteTaskComment, getClosedStatus, getRemoteTask, updateRemoteTaskDueDate } from "@/lib/clickup/tasks";
+import { archiveRemoteTask, completeRemoteTask, createRemoteTaskComment, getClosedStatus, getRemoteTask, updateRemoteTaskDueDate } from "@/lib/clickup/tasks";
 
 function invalid(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
@@ -40,12 +41,12 @@ function assertCurrentLink(event: { clickupTaskId: string | null }, current: Rem
   }
 }
 
-async function assertCurrentTask(task: { id: string; listId: string | null }) {
+async function assertCurrentTask(task: { id: string; listId: string | null; assignedToMe?: boolean; rawJson?: unknown }) {
   assertTaskInScope(task);
   if (process.env.USE_MOCK_DATA === "true") return task.listId;
   const current = await getRemoteTask(task.id);
   if (!current) invalid("La tarea ya no existe en ClickUp. Sincroniza el calendario.", 404);
-  assertTaskInScope({ listId: current.list?.id ?? null });
+  assertTaskInScope({ listId: current.list?.id ?? null, rawJson: current });
   return current.list?.id ?? null;
 }
 
@@ -88,7 +89,7 @@ export async function scheduleTask(taskId: string, startInput: unknown, operatio
     if (!existing) {
       // Google recovers POST409 by fetching the same deterministic ID. This also
       // handles a crash after Google accepted the request but before SQLite saved.
-      const remote = await createRemoteEvent(task.id, operation.title, operation.startAt, operation.endAt, operation.calendarEventId);
+      const remote = await createRemoteEvent(task.id, operation.title, operation.startAt, operation.endAt, operation.calendarEventId, task.url);
       if (remote.id !== operation.calendarEventId) invalid("Google no devolvió el ID esperado del evento", 502);
       const savedOperation = operation;
       await db.$transaction(async (tx) => {
@@ -101,7 +102,7 @@ export async function scheduleTask(taskId: string, startInput: unknown, operatio
         await tx.scheduleOperation.update({ where: { id: savedOperation.id }, data: { savedAt: new Date() } });
       });
     }
-    return { id: operation.calendarEventId, reused, ...await syncTaskSchedule(task.id, operation.calendarEventId) };
+    return { id: operation.calendarEventId, reused, ...await syncTaskSchedule(task.id, operation.calendarEventId, !reused) };
   });
 }
 
@@ -113,9 +114,6 @@ export async function linkTaskToEvent(taskId: string, eventId: string) {
     if (!task || !event) invalid("Tarea o evento no encontrado", 404);
     await assertCurrentTask(task);
     const raw = await assertEditable(event);
-    if (event.clickupTaskId && event.clickupTaskId !== taskId) invalid("Este evento ya está vinculado a otra tarea", 409);
-    const remoteTaskId = remoteLinkedTask(raw);
-    if (remoteTaskId && remoteTaskId !== taskId) invalid("El evento ya se vinculó a otra tarea en Google Calendar", 409);
     if (raw.start?.date) invalid("Elige un agendamiento con hora para vincular la tarea");
     if (event.clickupTaskId !== taskId) {
       const remote = await linkRemoteEvent(raw, event.calendarId, taskId);
@@ -128,11 +126,12 @@ export async function linkTaskToEvent(taskId: string, eventId: string) {
     } else {
       await db.taskEventLink.upsert({ where: { calendarEventId: eventId }, create: { clickupTaskId: taskId, calendarEventId: eventId, clickupSyncPending: true }, update: {} });
     }
-    return syncTaskSchedule(taskId, eventId);
+    return syncTaskSchedule(taskId, eventId, true);
   });
 }
 
-export async function syncTaskSchedule(taskId: string, eventId: string): Promise<ScheduleSyncResult> {
+// `verified` skips re-fetching the task and event when the caller just validated both.
+export async function syncTaskSchedule(taskId: string, eventId: string, verified = false): Promise<ScheduleSyncResult> {
   return withMutationLock("planner", async () => {
     const [task, cachedEvent, link] = await Promise.all([
       db.clickUpTask.findUnique({ where: { id: taskId } }), db.calendarEvent.findUnique({ where: { id: eventId } }),
@@ -141,16 +140,20 @@ export async function syncTaskSchedule(taskId: string, eventId: string): Promise
     if (!task || !cachedEvent || !link || cachedEvent.clickupTaskId !== taskId || link.clickupTaskId !== taskId || !link.clickupSyncPending) return { clickupSyncPending: false };
     let event = cachedEvent;
     try {
-      await assertCurrentTask(task);
-      const current = await assertEditable(event);
-      assertCurrentLink(event, current);
-      if (current.start && current.end) {
-        const startAt = googleEventDate(current.start);
-        const endAt = googleEventDate(current.end);
-        if (startAt.getTime() !== event.startAt.getTime() || endAt.getTime() !== event.endAt.getTime()) {
-          event = await db.calendarEvent.update({ where: { id: eventId }, data: { startAt, endAt, rawJson: toJson(current), syncedAt: new Date() } });
+      if (!verified) {
+        await assertCurrentTask(task);
+        const current = await assertEditable(event);
+        assertCurrentLink(event, current);
+        if (current.start && current.end) {
+          const startAt = googleEventDate(current.start);
+          const endAt = googleEventDate(current.end);
+          if (startAt.getTime() !== event.startAt.getTime() || endAt.getTime() !== event.endAt.getTime()) {
+            event = await db.calendarEvent.update({ where: { id: eventId }, data: { startAt, endAt, rawJson: toJson(current), syncedAt: new Date() } });
+          }
         }
       }
+      // Due date and comment are independent ClickUp calls, so run them concurrently.
+      const updateDue = async () => {
       if (link.dueSyncedStartAt?.getTime() !== event.startAt.getTime()) {
         const remote = await updateRemoteTaskDueDate(taskId, event.startAt);
         const original = task.rawJson && typeof task.rawJson === "object" && !Array.isArray(task.rawJson) ? task.rawJson : {};
@@ -162,6 +165,8 @@ export async function syncTaskSchedule(taskId: string, eventId: string): Promise
           await tx.taskEventLink.update({ where: { id: link.id }, data: { dueSyncedStartAt: event.startAt } });
         });
       }
+      };
+      const addComment = async () => {
       if (link.commentedStartAt?.getTime() !== event.startAt.getTime()) {
         if (link.commentAttemptedStartAt?.getTime() === event.startAt.getTime()) {
           throw new Error("El resultado del comentario anterior es incierto. Revisa ClickUp antes de repetirlo.");
@@ -184,6 +189,10 @@ export async function syncTaskSchedule(taskId: string, eventId: string): Promise
         }
         await db.taskEventLink.update({ where: { id: link.id }, data: { commentedStartAt: event.startAt } });
       }
+      };
+      const steps = await Promise.allSettled([updateDue(), addComment()]);
+      const failed = steps.find((step): step is PromiseRejectedResult => step.status === "rejected");
+      if (failed) throw failed.reason;
       await db.taskEventLink.update({ where: { id: link.id }, data: { clickupSyncPending: false, clickupSyncError: null } });
       return { clickupSyncPending: false };
     } catch (error) {
@@ -216,7 +225,22 @@ export async function rescheduleEvent(id: string, startInput: unknown, endInput:
       await tx.calendarEvent.update({ where: { id }, data: { startAt, endAt, rawJson: toJson(rawJson), remoteUpdated: remote.updated ? new Date(remote.updated) : new Date(), syncedAt: new Date() } });
       if (event.clickupTaskId) await tx.taskEventLink.updateMany({ where: { calendarEventId: id, clickupTaskId: event.clickupTaskId }, data: { clickupSyncPending: true } });
     });
-    return event.clickupTaskId ? syncTaskSchedule(event.clickupTaskId, id) : { clickupSyncPending: false };
+    return event.clickupTaskId ? syncTaskSchedule(event.clickupTaskId, id, true) : { clickupSyncPending: false };
+  });
+}
+
+export async function renameEvent(id: string, titleInput: unknown) {
+  const title = typeof titleInput === "string" ? titleInput.trim() : "";
+  if (!title || title.length > 1024) invalid("El título debe tener entre 1 y 1024 caracteres");
+  return withMutationLock("planner", async () => {
+    const event = await db.calendarEvent.findUnique({ where: { id } });
+    if (!event) invalid("Evento no encontrado", 404);
+    const current = await assertEditable(event);
+    assertCurrentLink(event, current);
+    const remote = await renameRemoteEvent(event.id, event.calendarId, title, typeof current.etag === "string" ? current.etag : undefined);
+    const rawJson = process.env.USE_MOCK_DATA === "true" ? { ...current, summary: title, updated: remote.updated } : remote;
+    await db.calendarEvent.update({ where: { id }, data: { title, rawJson: toJson(rawJson), remoteUpdated: remote.updated ? new Date(remote.updated) : new Date(), syncedAt: new Date() } });
+    return { clickupSyncPending: false };
   });
 }
 
@@ -257,5 +281,23 @@ export async function completeTask(id: string) {
     const remote = await completeRemoteTask(id, closedStatus);
     const nextStatus = typeof remote.status === "object" ? remote.status?.status ?? closedStatus : closedStatus;
     await db.clickUpTask.update({ where: { id }, data: { status: nextStatus, rawJson: toJson(process.env.USE_MOCK_DATA === "true" ? { ...(raw ?? {}), status: { status: nextStatus, type: "closed" } } : remote), remoteUpdated: new Date(), syncedAt: new Date() } });
+  });
+}
+
+export async function unarchiveTask(id: string) {
+  await withMutationLock("planner", () => archiveRemoteTask(id, false));
+  await syncClickUp();
+}
+
+export async function archiveTask(id: string) {
+  return withMutationLock("planner", async () => {
+    const task = await db.clickUpTask.findUnique({ where: { id } });
+    if (!task) invalid("Tarea no encontrada", 404);
+    await assertCurrentTask(task);
+    await archiveRemoteTask(id);
+    await db.$transaction([
+      db.taskEventLink.deleteMany({ where: { clickupTaskId: id } }),
+      db.clickUpTask.delete({ where: { id } }),
+    ]);
   });
 }

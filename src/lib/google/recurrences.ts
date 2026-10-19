@@ -77,7 +77,10 @@ function asPlannerEvent(row: CalendarEvent, recurring: boolean): PlannerEvent {
   const properties = record(source.extendedProperties) && record(source.extendedProperties.private) ? source.extendedProperties.private : {};
   return { id: row.id, calendarId: row.calendarId, title: row.title, startAt: row.startAt.toISOString(), endAt: row.endAt.toISOString(),
     allDay: Boolean(startDate && endDate), startDate, endDate, clickupTaskId: row.clickupTaskId,
-    plannerOwned: properties.source === "planner", recurring };
+    plannerOwned: properties.source === "planner", recurring,
+    hasMeet: typeof source.hangoutLink === "string" || (record(source.conferenceData) && Array.isArray(source.conferenceData.entryPoints)),
+    htmlLink: typeof source.htmlLink === "string" ? source.htmlLink : null,
+    location: typeof source.location === "string" && source.location.trim() ? source.location.trim() : null };
 }
 
 /** Expand wall-clock rules in floating UTC, then resolve them in the series zone.

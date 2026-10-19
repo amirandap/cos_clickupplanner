@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DateTime } from "luxon";
-import { ArrowDownToLine, CalendarDays, Check, Clock3, ExternalLink, Trash2, X } from "lucide-react";
+import { ArrowDownToLine, CalendarDays, Check, Clock3, ExternalLink, Link2, Pencil, Trash2, X } from "lucide-react";
 import type { PlannerEvent, PlannerTask } from "@/lib/planner/types";
 
 type EventModalProps = {
@@ -12,9 +12,18 @@ type EventModalProps = {
   onComplete: () => void;
   onRemove: () => void;
   onReschedule: () => void;
+  onRename: (title: string) => void;
 };
 
-export function EventModal({ event, task, timezone, busy, onClose, onComplete, onRemove, onReschedule }: EventModalProps) {
+export function EventModal({ event, task, timezone, busy, onClose, onComplete, onRemove, onReschedule, onRename }: EventModalProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(event.title);
+  const canRename = !event.recurring && !busy;
+  function submitTitle() {
+    const next = draft.trim();
+    setEditing(false);
+    if (next && next !== event.title) onRename(next);
+  }
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   const busyRef = useRef(busy);
@@ -44,7 +53,7 @@ export function EventModal({ event, task, timezone, busy, onClose, onComplete, o
   }, []);
 
   const date = DateTime.fromISO(event.allDay && event.startDate ? event.startDate : event.startAt, { zone: timezone }).setLocale("es-DO");
-  const label = date.isValid ? date.toFormat(event.allDay ? "cccc d 'de' LLLL' · Todo el día'" : "cccc d 'de' LLLL · HH:mm") : "Fecha no disponible";
+  const label = date.isValid ? date.toFormat(event.allDay ? "cccc d 'de' LLLL' · Todo el día'" : "cccc d 'de' LLLL · h:mm a") : "Fecha no disponible";
 
   return <div className="modal-backdrop" onMouseDown={() => { if (!busy) onClose(); }}>
     <div className="event-modal" role="dialog" aria-modal="true" aria-labelledby="event-title" tabIndex={-1}
@@ -54,9 +63,19 @@ export function EventModal({ event, task, timezone, busy, onClose, onComplete, o
         <button aria-label="Cerrar" disabled={busy} onClick={onClose}><X size={18} /></button>
       </div>
       <p className="modal-kicker">{event.recurring ? "EVENTO RECURRENTE" : event.allDay ? "TODO EL DÍA" : "BLOQUE DE TIEMPO"}</p>
-      <h2 id="event-title">{event.title}</h2>
+      {editing
+        ? <input id="event-title" className="modal-title-input" value={draft} autoFocus maxLength={1024} aria-label="Título en Google Calendar"
+          onChange={(change) => setDraft(change.target.value)} onBlur={submitTitle}
+          onKeyDown={(key) => { if (key.key === "Enter") submitTitle(); if (key.key === "Escape") { key.stopPropagation(); setDraft(event.title); setEditing(false); } }} />
+        : <h2 id="event-title" className="modal-title">{event.title}
+          {canRename && <button className="modal-title-edit" aria-label="Editar título" onClick={() => { setDraft(event.title); setEditing(true); }}><Pencil size={14} /></button>}
+        </h2>}
       <p className="modal-time"><Clock3 size={16} />{label}</p>
+      {task && <p className="modal-linked"><Link2 size={14} /><span>Tarjeta: <a href={task.url ?? `https://app.clickup.com/t/${task.id}`} target="_blank" rel="noopener noreferrer">{task.title}</a></span></p>}
       <div className="modal-actions">
+        {event.htmlLink && <a className="modal-action" href={event.htmlLink} target="_blank" rel="noopener noreferrer">
+          <CalendarDays size={17} /> Abrir en Google Calendar
+        </a>}
         {task && <a className="modal-action" href={task.url ?? `https://app.clickup.com/t/${task.id}`} target="_blank" rel="noopener noreferrer">
           <ExternalLink size={17} /> Abrir en ClickUp
         </a>}

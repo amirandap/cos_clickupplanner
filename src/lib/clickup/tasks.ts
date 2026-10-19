@@ -1,5 +1,5 @@
 import { db } from "@/lib/db/client";
-import { getConfiguredListIds } from "@/lib/planner/config";
+import { getConfiguredListIds, getDefaultAssigneeId } from "@/lib/planner/config";
 import { ProviderHttpError, ProviderPayloadError, record, requestJson } from "../providers/http";
 
 export type RemoteClickUpTask = {
@@ -47,7 +47,7 @@ async function clickupRequest(path: string, init: RequestInit = {}, retrySafe = 
 export async function listRemoteTasks(updatedAfter?: Date) {
   void updatedAfter; // Full snapshots intentionally supersede legacy delta cursors.
   const listIds = getConfiguredListIds();
-  if (!listIds.length) throw new Error("Configura CLICKUP_LIST_IDS para sincronizar tareas");
+  if (!listIds.length && !getDefaultAssigneeId()) throw new Error("Configura CLICKUP_LIST_IDS para sincronizar tareas");
   const tasks = new Map<string, RemoteClickUpTask>();
   for (const listId of listIds) {
     let complete = false;
@@ -64,6 +64,28 @@ export async function listRemoteTasks(updatedAfter?: Date) {
     }
     if (!complete) throw new ProviderPayloadError("ClickUp", "paginación excesiva");
   }
+  const me = getDefaultAssigneeId();
+  if (me) {
+    const teams = await clickupRequest("/team");
+    if (!record(teams) || !Array.isArray(teams.teams)) throw new ProviderPayloadError("ClickUp", "equipos");
+    for (const team of teams.teams) {
+      if (!record(team) || typeof team.id !== "string") throw new ProviderPayloadError("ClickUp", "equipo");
+      let complete = false;
+      for (let page = 0; page < 1000; page++) {
+        const query = new URLSearchParams({ page: String(page), include_closed: "true", subtasks: "true", order_by: "updated" });
+        query.append("assignees[]", me);
+        const result = await clickupRequest(`/team/${encodeURIComponent(team.id)}/task?${query}`);
+        if (!record(result) || !Array.isArray(result.tasks) || (result.last_page !== undefined && typeof result.last_page !== "boolean")) throw new ProviderPayloadError("ClickUp", "página de tareas asignadas");
+        for (const value of result.tasks) {
+          const task = validateTask(value);
+          const previous = tasks.get(task.id);
+          if (!previous || Number(task.date_updated ?? 0) >= Number(previous.date_updated ?? 0)) tasks.set(task.id, task);
+        }
+        if (result.last_page === true || (result.last_page === undefined && result.tasks.length < 100)) { complete = true; break; }
+      }
+      if (!complete) throw new ProviderPayloadError("ClickUp", "paginación excesiva");
+    }
+  }
   return [...tasks.values()];
 }
 
@@ -78,6 +100,11 @@ export async function getRemoteTask(id: string): Promise<RemoteClickUpTask | nul
 export async function completeRemoteTask(id: string, status: string) {
   if (process.env.USE_MOCK_DATA === "true") return { status: { status } };
   return validateTask(await clickupRequest(`/task/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ status }) }));
+}
+
+export async function archiveRemoteTask(id: string, archived = true) {
+  if (process.env.USE_MOCK_DATA === "true") return;
+  await clickupRequest(`/task/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ archived }) });
 }
 
 export async function updateRemoteTaskDueDate(id: string, dueAt: Date) {

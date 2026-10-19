@@ -1,0 +1,1 @@
+ALTER TABLE "ClickUpTask" ADD COLUMN "assignedToMe" BOOLEAN NOT NULL DEFAULT false;

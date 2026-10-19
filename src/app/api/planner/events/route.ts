@@ -1,4 +1,4 @@
-import { scheduleTask, linkTaskToEvent, rescheduleEvent, removeEvent, validateOperationId } from "@/lib/planner/actions";
+import { scheduleTask, linkTaskToEvent, rescheduleEvent, renameEvent, removeEvent, validateOperationId } from "@/lib/planner/actions";
 import { assertSameOrigin, apiFailure, HttpError } from "@/lib/planner/http";
 
 export const runtime = "nodejs";
@@ -22,6 +22,7 @@ export async function PATCH(request: Request) {
     if (typeof body?.id !== "string" || !body.id.trim()) throw new HttpError(400, "Evento inválido");
     const result = typeof body.taskId === "string"
       ? await linkTaskToEvent(body.taskId, body.id)
+      : typeof body.title === "string" ? await renameEvent(body.id, body.title)
       : await rescheduleEvent(body.id, body.startAt, body.endAt);
     return Response.json({ ok: true, ...result });
   } catch (error) { return apiFailure(error); }

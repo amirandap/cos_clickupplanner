@@ -20,6 +20,7 @@ async function fixture() {
     "@/lib/db/json": { toJson: (value: unknown) => JSON.parse(JSON.stringify(value)) },
     "@/lib/planner/locking": locking,
     "@/lib/planner/config": { appTimezone: () => "UTC", assertTaskInScope: () => undefined, assertCalendarInScope: () => undefined },
+    "@/lib/sync/run": { syncClickUp: async () => undefined },
     "@/lib/google/calendar": {
       calendarId: () => "primary",
       getRemoteEvent: async (id: string) => {
@@ -40,6 +41,7 @@ async function fixture() {
       },
       linkRemoteEvent: async (remote: Record<string, unknown>) => { calls.link++; await new Promise((resolve) => setTimeout(resolve, 20)); return remote; },
       updateRemoteEvent: async () => ({ updated: new Date().toISOString() }),
+      renameRemoteEvent: async (_id: string, _calendar: string, title: string) => ({ summary: title, updated: new Date().toISOString() }),
       deleteRemoteEvent: async () => undefined,
       unlinkRemoteEvent: async (remote: unknown) => remote,
     },
@@ -141,14 +143,15 @@ test("an idempotency key cannot be reused with a different payload", async () =>
   } finally { await f.cleanup(); }
 });
 
-test("concurrent links to different tasks cannot assign one event twice", async () => {
+test("linking a task to an already assigned event replaces the previous task", async () => {
   const f = await fixture();
   try {
     await f.event();
-    const results = await Promise.allSettled([f.actions.linkTaskToEvent("task-a", "event"), f.actions.linkTaskToEvent("task-b", "event")]);
-    assert.equal(results.filter((item) => item.status === "fulfilled").length, 1);
+    await f.actions.linkTaskToEvent("task-a", "event");
+    await f.actions.linkTaskToEvent("task-b", "event");
     assert.equal(await f.db.taskEventLink.count({ where: { calendarEventId: "event" } }), 1);
-    assert.equal(f.calls.link, 1);
+    assert.equal((await f.db.taskEventLink.findFirst({ where: { calendarEventId: "event" } }))?.clickupTaskId, "task-b");
+    assert.equal((await f.db.calendarEvent.findUnique({ where: { id: "event" } }))?.clickupTaskId, "task-b");
   } finally { await f.cleanup(); }
 });
 
@@ -161,5 +164,16 @@ test("concurrent pending retries perform each ClickUp side effect once", async (
     await Promise.all([f.actions.syncTaskSchedule("task-a", "event"), f.actions.syncTaskSchedule("task-a", "event")]);
     assert.equal(f.calls.due, 1);
     assert.equal(f.calls.comment, 1);
+  } finally { await f.cleanup(); }
+});
+
+test("renaming an event updates the stored title", async () => {
+  const f = await fixture();
+  try {
+    await f.event();
+    await f.actions.linkTaskToEvent("task-a", "event");
+    await f.actions.renameEvent("event", "  Nuevo título ");
+    assert.equal((await f.db.calendarEvent.findUnique({ where: { id: "event" } }))?.title, "Nuevo título");
+    await assert.rejects(() => f.actions.renameEvent("event", "   "));
   } finally { await f.cleanup(); }
 });

@@ -2,7 +2,7 @@ import { syncClickUp, syncGoogle } from "@/lib/sync/run";
 import { syncTaskSchedule } from "@/lib/planner/actions";
 import { db } from "@/lib/db/client";
 import { assertSameOrigin, apiFailure } from "@/lib/planner/http";
-import { getConfiguredCalendarId, getConfiguredListIds } from "@/lib/planner/config";
+import { getConfiguredCalendarId, taskScopeWhere } from "@/lib/planner/config";
 import { withMutationLock } from "@/lib/planner/locking";
 
 export const runtime = "nodejs";
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       const google = await syncGoogle();
       const [tasks, events] = await Promise.all([
         db.clickUpTask.findMany({
-          where: { listId: { in: process.env.USE_MOCK_DATA === "true" ? ["mock-list"] : getConfiguredListIds() } },
+          where: taskScopeWhere(),
           select: { id: true },
         }),
         db.calendarEvent.findMany({ where: { calendarId: getConfiguredCalendarId() }, select: { id: true } }),

@@ -23,15 +23,87 @@ import { SelectionBanner } from "./planner/selection-banner";
 
 type EventPeek = { title: string; time: string; left: number; top: number; below: boolean };
 
+const INITIAL_SEARCH = typeof window === "undefined" ? "" : window.location.search;
+
 export default function Planner({ initialData }: { initialData: PlannerData }) {
   const { data, busy, error, warning, setError, setWarning, loadRange, run, schedule } = usePlannerOperations(initialData);
   const timezone = data.timezone;
+  const archivedRef = useRef<string[]>([]);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+
+  function showPlanned(task: PlannerTask) {
+    if (!task.plannedEvent) return;
+    const api = calendarRef.current?.getApi();
+    const target = DateTime.fromISO(task.plannedEvent.startAt, { zone: timezone });
+    api?.gotoDate(target.toISO() ?? task.plannedEvent.startAt);
+    setHighlightId(task.plannedEvent.id);
+    const id = task.plannedEvent.id;
+    window.setTimeout(() => {
+      document.querySelector(`.fc-event[data-event-id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }, 400);
+    window.setTimeout(() => setHighlightId((current) => current === id ? null : current), 6000);
+  }
+
+  function archiveTask(task: PlannerTask) {
+    void run(() => requestJson("/api/planner/tasks", jsonRequest("DELETE", { id: task.id }), isMutationResult)).then((saved) => {
+      if (saved) archivedRef.current.push(task.id);
+    });
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key.toLowerCase() !== "z") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true']") || busyRef.current) return;
+      const id = archivedRef.current[archivedRef.current.length - 1];
+      if (!id) return;
+      event.preventDefault();
+      void run(() => requestJson("/api/planner/tasks", jsonRequest("POST", { id }), isMutationResult)).then((saved) => {
+        if (saved) archivedRef.current.pop();
+      });
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [run]);
   const [search, setSearch] = useState("");
   const [selectedAssigneeId, setSelectedAssigneeId] = useState(() => initialData.defaultAssigneeId
     && initialData.tasks.some((task) => task.assignees.some((person) => person.id === initialData.defaultAssigneeId))
     ? initialData.defaultAssigneeId : "all");
   const [view, setView] = useState<CalendarView>("timeGridWeek");
   const [title, setTitle] = useState("");
+  const [showDesc, setShowDesc] = useState(false);
+  const showDescRef = useRef(false);
+  const [hideScheduled, setHideScheduled] = useState(true);
+  const hideScheduledRef = useRef(true);
+  const urlReadyRef = useRef(false);
+  const currentDateRef = useRef("");
+  useEffect(() => {
+    const params = new URLSearchParams(INITIAL_SEARCH);
+    const wanted = params.get("view");
+    const date = params.get("date");
+    const assignee = params.get("assignee");
+    if (assignee && initialData.tasks.some((task) => task.assignees.some((person) => person.id === assignee))) setSelectedAssigneeId(assignee);
+    showDescRef.current = ["1", "true"].includes(params.get("desc") ?? "");
+    setShowDesc(showDescRef.current);
+    hideScheduledRef.current = !["1", "true"].includes(params.get("scheduled") ?? "");
+    setHideScheduled(hideScheduledRef.current);
+    urlReadyRef.current = true;
+    const api = calendarRef.current?.getApi();
+    const valid: CalendarView[] = ["timeGridDay", "timeGridWorkweek", "timeGridWeekend", "timeGridWeek"];
+    if (api && wanted && (valid as string[]).includes(wanted)) {
+      setView(wanted as CalendarView);
+      api.changeView(wanted, date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined);
+    } else if (api && date && /^\d{4}-\d{2}-\d{2}$/.test(date)) api.gotoDate(date);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const skipFirstUrlWriteRef = useRef(true);
+  useEffect(() => {
+    if (skipFirstUrlWriteRef.current) { skipFirstUrlWriteRef.current = false; return; }
+    if (urlReadyRef.current && currentDateRef.current) writeUrl(view, currentDateRef.current, selectedAssigneeId);
+  }, [view, selectedAssigneeId]);
   const [selected, setSelected] = useState<PlannerEvent | null>(null);
   const [rescheduleId, setRescheduleId] = useState<string | null>(null);
   const [scheduleTaskId, setScheduleTaskId] = useState<string | null>(null);
@@ -47,7 +119,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
 
   useEffect(() => {
     try {
-      const saved = Number(window.localStorage.getItem("clickup-planner:task-pane-size"));
+      const saved = Number(window.localStorage.getItem("clickup-planner:task-pane-size-v2"));
       if (saved >= 20 && saved <= 60) paneGroupRef.current?.setLayout({ tasks: saved, calendar: 100 - saved });
     } catch { /* Pane size is optional when browser storage is unavailable. */ }
   }, [paneGroupRef]);
@@ -57,10 +129,25 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     if (!container) return;
     function stopControlDrag(event: Event) {
       const target = event.target;
-      if (target instanceof Element && target.closest("a,button,input,select,textarea,[role='button'],[contenteditable='true']")) {
+      if (target instanceof Element && target.closest("button,input,select,textarea,[role='button'],[contenteditable='true']")) {
         event.stopPropagation();
       }
     }
+    // Links stay draggable; a drag that began on a link must not open it on release.
+    let downAt: { x: number; y: number } | null = null;
+    let dragged = false;
+    const onDown = (event: MouseEvent) => { downAt = { x: event.clientX, y: event.clientY }; dragged = false; };
+    const onMove = (event: MouseEvent) => {
+      if (downAt && Math.hypot(event.clientX - downAt.x, event.clientY - downAt.y) > 4) dragged = true;
+    };
+    const onClickCapture = (event: MouseEvent) => {
+      if (dragged && event.target instanceof Element && event.target.closest("a")) { event.preventDefault(); event.stopPropagation(); }
+      dragged = false; downAt = null;
+    };
+    container.addEventListener("mousedown", onDown, true);
+    window.addEventListener("mousemove", onMove, true);
+    container.addEventListener("click", onClickCapture, true);
+    container.addEventListener("dragstart", (event) => event.preventDefault());
     // FullCalendar starts external drags from native mouse/touch events on this list.
     container.addEventListener("mousedown", stopControlDrag, true);
     container.addEventListener("touchstart", stopControlDrag, { capture: true, passive: true });
@@ -72,6 +159,9 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       draggable.destroy();
       container.removeEventListener("mousedown", stopControlDrag, true);
       container.removeEventListener("touchstart", stopControlDrag, true);
+      container.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("mousemove", onMove, true);
+      container.removeEventListener("click", onClickCapture, true);
     };
   }, []);
 
@@ -94,6 +184,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     const groups = new Map<string, PlannerTask[]>();
     for (const task of data.tasks) {
       if (task.completed || (selectedAssigneeId !== "all" && !task.assignees.some((person) => person.id === selectedAssigneeId))) continue;
+      if (hideScheduled && task.plannedCount > 0) continue;
       if (!`${task.title} ${task.status ?? ""}`.toLowerCase().includes(search.toLowerCase())) continue;
       const status = task.status?.trim() || "Sin estado";
       const tasks = groups.get(status) ?? [];
@@ -101,7 +192,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       groups.set(status, tasks);
     }
     return [...groups];
-  }, [data.tasks, search, selectedAssigneeId]);
+  }, [data.tasks, search, selectedAssigneeId, hideScheduled]);
 
   const selectedTask = selected?.clickupTaskId ? data.tasks.find((task) => task.id === selected.clickupTaskId) : null;
   const schedulingTask = data.tasks.find((task) => task.id === scheduleTaskId);
@@ -113,10 +204,10 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     end: event.allDay ? event.endDate! : event.endAt,
     allDay: event.allDay,
     editable: !event.recurring && !busy,
-    backgroundColor: event.clickupTaskId ? "#563ec9" : "#dce5e2",
-    borderColor: event.clickupTaskId ? "#563ec9" : "#cbd5d1",
-    textColor: event.clickupTaskId ? "#fff" : "#26312f",
-    extendedProps: { clickupTaskId: event.clickupTaskId },
+    backgroundColor: event.clickupTaskId ? "#563ec9" : event.hasMeet ? "#1a73e8" : event.location ? "#e8710a" : "#7a8f88",
+    textColor: "#fff",
+    classNames: event.id === highlightId ? ["event-highlight"] : [],
+    extendedProps: { clickupTaskId: event.clickupTaskId, hasMeet: Boolean(event.hasMeet), location: event.location ?? null },
   }));
 
   function closeSelection() {
@@ -206,7 +297,16 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       return;
     }
     const start = calendarStart(info);
-    if (start) void run(() => schedule(taskId, start.toISOString()), closeSelection);
+    if (!start) return;
+    // Dropping on a time slot already occupied by an event links it instead of creating another.
+    const overlapping = info.allDay ? undefined : data.events.find((event) => !event.allDay && !event.recurring
+      && (!event.clickupTaskId || event.clickupTaskId === taskId)
+      && new Date(event.startAt) <= start && start < new Date(event.endAt));
+    if (overlapping) {
+      void run(() => requestJson("/api/planner/events", jsonRequest("PATCH", { id: overlapping.id, taskId }), isMutationResult), closeSelection);
+      return;
+    }
+    void run(() => schedule(taskId, start.toISOString()), closeSelection);
   }
 
   function handleDateClick(info: DateClickArg) {
@@ -214,6 +314,20 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     const event = data.events.find((item) => item.id === rescheduleId);
     const start = calendarStart(info);
     if (event && start) moveEvent(event, start);
+  }
+
+  function handleEventDragStop(info: { event: { id: string }; jsEvent: MouseEvent | TouchEvent }) {
+    if (busy) return;
+    const point = "changedTouches" in info.jsEvent ? info.jsEvent.changedTouches[0] : info.jsEvent as MouseEvent;
+    const taskEl = document.elementsFromPoint(point.clientX, point.clientY)
+      .map((element) => element.closest<HTMLElement>(".planner-task[data-task-id]")).find(Boolean);
+    const taskId = taskEl?.dataset.taskId;
+    if (!taskId) return;
+    if (data.events.find((event) => event.id === info.event.id)?.recurring) {
+      setError("Los eventos recurrentes se gestionan desde Google Calendar.");
+      return;
+    }
+    void run(() => requestJson("/api/planner/events", jsonRequest("PATCH", { id: info.event.id, taskId }), isMutationResult), closeSelection);
   }
 
   function handleEventChange(info: EventDropArg | EventResizeDoneArg) {
@@ -239,7 +353,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     const rect = element.getBoundingClientRect();
     setEventPeek({
       title: event.title,
-      time: event.allDay ? "Todo el día" : `${start.toFormat("ccc d LLL · HH:mm")}–${end.toFormat("HH:mm")}`,
+      time: event.allDay ? "Todo el día" : `${start.toFormat("ccc d LLL · h:mm a")}–${end.toFormat("h:mm a")}`,
       left: Math.max(12, Math.min(rect.left, window.innerWidth - 292)),
       top: rect.top < 115 ? rect.bottom + 8 : rect.top - 8,
       below: rect.top < 115,
@@ -260,6 +374,16 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     else calendarRef.current?.getApi().prev();
   }
 
+  function writeUrl(nextView: string, date: string, assignee: string) {
+    const params = new URLSearchParams();
+    params.set("view", nextView);
+    params.set("date", date);
+    if (assignee !== "all") params.set("assignee", assignee);
+    if (showDescRef.current) params.set("desc", "1");
+    if (!hideScheduledRef.current) params.set("scheduled", "1");
+    window.history.replaceState(null, "", `?${params.toString()}`);
+  }
+
   function changeView(next: CalendarView) {
     if (busy) return;
     setView(next);
@@ -277,15 +401,21 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     {(rescheduleId || scheduleTaskId) && <SelectionBanner taskTitle={schedulingTask?.title} timezone={timezone}
       inputRef={dateTimeInputRef} dateTimeInput={dateTimeInput} linkEventId={linkEventId} linkEvents={linkEvents} busy={busy}
       onDateTime={setDateTimeInput} onEvent={setLinkEventId} onSave={saveSelection} onCancel={closeSelection} />}
-    <Group className="planner-grid" orientation="horizontal" groupRef={paneGroupRef} onLayoutChanged={(layout, meta) => {
+    <Group className={showDesc ? "planner-grid show-desc" : "planner-grid"} orientation="horizontal" groupRef={paneGroupRef} onLayoutChanged={(layout, meta) => {
       if (meta.isUserInteraction && layout.tasks) {
-        try { window.localStorage.setItem("clickup-planner:task-pane-size", String(layout.tasks)); }
+        try { window.localStorage.setItem("clickup-planner:task-pane-size-v2", String(layout.tasks)); }
         catch { /* Resizing still works when browser storage is unavailable. */ }
       }
     }}>
-      <Panel id="tasks" defaultSize="32%" minSize="220px" maxSize="60%">
-        <TaskPanel groups={groupedTasks} timezone={timezone} search={search} busy={busy} onSearch={setSearch}
-          onSchedule={beginSchedule} listRef={taskListRef} />
+      <Panel id="tasks" defaultSize="24%" minSize="220px" maxSize="60%">
+        <TaskPanel hideScheduled={hideScheduled} onToggleScheduled={() => {
+            const next = !hideScheduledRef.current;
+            hideScheduledRef.current = next; setHideScheduled(next);
+            if (currentDateRef.current) writeUrl(view, currentDateRef.current, selectedAssigneeId);
+          }} groups={groupedTasks} timezone={timezone} search={search} busy={busy} onSearch={setSearch}
+          onSchedule={beginSchedule} onShowPlanned={showPlanned} onArchive={(task) => {
+            archiveTask(task);
+          }} listRef={taskListRef} />
       </Panel>
       <Separator className="pane-separator" aria-label="Ajustar ancho de tareas y calendario"><span aria-hidden="true" /></Separator>
       <Panel id="calendar" minSize="420px" onResize={() => calendarRef.current?.getApi().updateSize()}>
@@ -300,13 +430,22 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
               locale={esLocale} timeZone={timezone} headerToolbar={false} navLinks={!busy} navLinkDayClick={(date) => {
                 if (busy) return;
                 setView("timeGridDay"); calendarRef.current?.getApi().changeView("timeGridDay", date);
-              }} allDaySlot slotMinTime="06:00:00" slotMaxTime="23:00:00" slotDuration="00:30:00" slotLabelInterval="01:00:00"
-              slotLabelFormat={{ hour: "numeric", hour12: false }} displayEventTime={false} nowIndicator height="auto" contentHeight="auto"
-              expandRows droppable={!busy} editable={!busy} selectable={!busy} eventDurationEditable={!busy} events={events}
-              eventDidMount={(info) => { info.el.dataset.eventId = info.event.id; info.el.setAttribute("aria-label", info.event.title); }}
+              }} allDaySlot allDayText="∞" slotMinTime="06:00:00" slotMaxTime="23:00:00" slotDuration="00:30:00" slotLabelInterval="01:00:00"
+              slotLabelFormat={(arg) => { const h = arg.date.hour; return `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`; }} displayEventTime={false} nowIndicator height="auto" contentHeight="auto"
+              expandRows slotEventOverlap eventMinHeight={22} droppable={!busy} editable={!busy} selectable={!busy} eventDurationEditable={!busy} events={events}
+              eventContent={(arg) => (
+                <div className="fc-event-main-frame">
+                  <div className="fc-event-title">{arg.event.extendedProps.hasMeet ? "📹 " : ""}{arg.event.extendedProps.location ? "📍 " : ""}{arg.event.title}</div>
+                </div>
+              )}
+              eventClassNames={(arg) => (arg.event.extendedProps.clickupTaskId ? ["is-clickup"] : [])}
+              eventDidMount={(info) => { info.el.title = info.event.title; info.el.dataset.eventId = info.event.id; info.el.setAttribute("aria-label", info.event.title); }}
               eventMouseEnter={(info) => showEventPeek(info.el, info.event.id)} eventMouseLeave={() => setEventPeek(null)}
-              drop={handleDrop} dateClick={handleDateClick} eventClick={handleEventClick} eventDrop={handleEventChange} eventResize={handleEventChange}
-              datesSet={(info) => { setTitle(info.view.title); loadRange({ start: info.start.toISOString(), end: info.end.toISOString() }); }} />
+              drop={handleDrop} dateClick={handleDateClick} eventClick={handleEventClick} eventDragStop={handleEventDragStop} eventDrop={handleEventChange} eventResize={handleEventChange}
+              datesSet={(info) => {
+                setTitle(info.view.title); currentDateRef.current = info.startStr.slice(0, 10);
+                if (urlReadyRef.current) writeUrl(info.view.type, currentDateRef.current, selectedAssigneeId);
+                loadRange({ start: info.start.toISOString(), end: info.end.toISOString() }); }} />
           </div>
         </section>
       </Panel>
@@ -315,6 +454,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       style={{ left: eventPeek.left, top: eventPeek.top }} role="tooltip"><strong>{eventPeek.title}</strong><span>{eventPeek.time}</span></div>}
     {selected && <EventModal event={selected} task={selectedTask} timezone={timezone} busy={busy} onClose={() => setSelected(null)}
       onReschedule={() => beginReschedule(selected)}
+      onRename={(title) => { void run(() => requestJson("/api/planner/events", jsonRequest("PATCH", { id: selected.id, title }), isMutationResult), closeSelection); }}
       onComplete={() => { if (selectedTask) void run(() => requestJson("/api/planner/tasks", jsonRequest("PATCH", { id: selectedTask.id }), isMutationResult), closeSelection); }}
       onRemove={() => { void run(() => requestJson("/api/planner/events", jsonRequest("DELETE", { id: selected.id }), isMutationResult), closeSelection); }} />}
     {busy && <div className="busy-indicator" role="status"><Loader2 size={16} className="animate-spin" /> Guardando...</div>}

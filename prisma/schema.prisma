@@ -17,6 +17,7 @@ model ClickUpTask {
   url           String?
   listId        String?
   rawJson       Json?
+  assignedToMe  Boolean  @default(false)
   remoteUpdated DateTime?
   syncedAt      DateTime @default(now())
 

@@ -29,9 +29,9 @@ async function googleRequest(url: string, init: RequestInit = {}, retrySafe = tr
   }, { retrySafe });
 }
 
-export async function createRemoteEvent(taskId: string, title: string, startAt: Date, endAt: Date, eventId?: string) {
+export async function createRemoteEvent(taskId: string, title: string, startAt: Date, endAt: Date, eventId?: string, taskUrl?: string | null) {
   if (eventId && !/^[a-v0-9]{5,1024}$/.test(eventId) && process.env.USE_MOCK_DATA !== "true") throw new Error("ID de evento Google inválido");
-  const data = { ...(eventId ? { id: eventId } : {}), summary: title, start: { dateTime: startAt.toISOString(), timeZone: appTimezone() }, end: { dateTime: endAt.toISOString(), timeZone: appTimezone() }, extendedProperties: { private: { source: "planner", clickupTaskId: taskId } } };
+  const data = { ...(eventId ? { id: eventId } : {}), summary: title, ...(taskUrl ? { description: `ClickUp: ${taskUrl}`, source: { title: "ClickUp", url: taskUrl } } : {}), start: { dateTime: startAt.toISOString(), timeZone: appTimezone() }, end: { dateTime: endAt.toISOString(), timeZone: appTimezone() }, extendedProperties: { private: { source: "planner", clickupTaskId: taskId } } };
   if (process.env.USE_MOCK_DATA === "true") return { ...data, id: eventId ?? `mock-${crypto.randomUUID()}`, updated: new Date().toISOString() } satisfies RemoteCalendarEvent;
   try {
     return validateGoogleEvent(await googleRequest(calendarUrl(), { method: "POST", body: JSON.stringify(data) }, Boolean(eventId)));
@@ -52,6 +52,13 @@ export async function updateRemoteEvent(id: string, calendar: string, startAt: D
   return validateGoogleEvent(await googleRequest(`${calendarUrl(calendar)}/${encodeURIComponent(id)}`, {
     method: "PATCH", headers: etag ? { "If-Match": etag } : undefined,
     body: JSON.stringify({ start: { dateTime: startAt.toISOString(), timeZone: appTimezone() }, end: { dateTime: endAt.toISOString(), timeZone: appTimezone() } }),
+  }));
+}
+
+export async function renameRemoteEvent(id: string, calendar: string, title: string, etag?: string) {
+  if (process.env.USE_MOCK_DATA === "true") return { updated: new Date().toISOString(), summary: title };
+  return validateGoogleEvent(await googleRequest(`${calendarUrl(calendar)}/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: etag ? { "If-Match": etag } : undefined, body: JSON.stringify({ summary: title }),
   }));
 }
 

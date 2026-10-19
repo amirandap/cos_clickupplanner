@@ -1,6 +1,6 @@
 import { db } from "@/lib/db/client";
 import type { PlannerAssignee, PlannerData } from "./types";
-import { appTimezone, getConfiguredCalendarId, getConfiguredListIds } from "./config";
+import { appTimezone, getConfiguredCalendarId, taskScopeWhere } from "./config";
 import { expandCalendarEvents } from "../google/recurrences";
 
 function taskAssignees(rawJson: unknown): PlannerAssignee[] {
@@ -30,7 +30,7 @@ export async function readPlanner(range?: { startAt: Date; endAt: Date }): Promi
   const mockMode = process.env.USE_MOCK_DATA === "true";
   const selectedCalendar = getConfiguredCalendarId();
   const [tasks, events, syncStates] = await Promise.all([
-    db.clickUpTask.findMany({ where: { listId: { in: mockMode ? ["mock-list"] : getConfiguredListIds() } }, orderBy: [{ status: "asc" }, { dueDate: "asc" }, { title: "asc" }] }),
+    db.clickUpTask.findMany({ where: taskScopeWhere(), orderBy: [{ status: "asc" }, { dueDate: "asc" }, { title: "asc" }] }),
     // Masters and original-time exceptions may start outside the requested range.
     // Read the selected calendar cache once and expand only the visible range.
     db.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, orderBy: { startAt: "asc" } }),
@@ -40,12 +40,26 @@ export async function readPlanner(range?: { startAt: Date; endAt: Date }): Promi
     clickupTaskId: { in: tasks.map((task) => task.id) }, calendarEventId: { in: events.map((event) => event.id) },
   } });
   const counts = new Map<string, number>();
-  for (const link of links) counts.set(link.clickupTaskId, (counts.get(link.clickupTaskId) ?? 0) + 1);
+  const eventsById = new Map(events.map((event) => [event.id, event]));
+  const nextEvent = new Map<string, { id: string; startAt: Date }>();
+  const now = Date.now();
+  for (const link of links) {
+    counts.set(link.clickupTaskId, (counts.get(link.clickupTaskId) ?? 0) + 1);
+    const event = eventsById.get(link.calendarEventId);
+    if (!event) continue;
+    const current = nextEvent.get(link.clickupTaskId);
+    const upcoming = event.startAt.getTime() >= now;
+    const currentUpcoming = current ? current.startAt.getTime() >= now : false;
+    if (!current || (upcoming && (!currentUpcoming || event.startAt < current.startAt)) || (!upcoming && !currentUpcoming && event.startAt > current.startAt)) {
+      nextEvent.set(link.clickupTaskId, { id: event.id, startAt: event.startAt });
+    }
+  }
   return {
     tasks: tasks.map((task) => ({
       id: task.id, title: task.title, status: task.status, priority: task.priority,
       dueDate: task.dueDate?.toISOString() ?? null, estimateMin: task.estimateMin,
       url: task.url, ...taskDetails(task.rawJson), plannedCount: counts.get(task.id) ?? 0,
+      plannedEvent: nextEvent.has(task.id) ? { id: nextEvent.get(task.id)!.id, startAt: nextEvent.get(task.id)!.startAt.toISOString() } : null,
       completed: (typeof task.rawJson === "object" && task.rawJson !== null && !Array.isArray(task.rawJson) && typeof task.rawJson.status === "object" && task.rawJson.status !== null && !Array.isArray(task.rawJson.status) && task.rawJson.status.type === "closed") || /^(complete|completed|done|closed|terminad|completad)/i.test(task.status ?? ""),
       assignees: taskAssignees(task.rawJson),
     })),

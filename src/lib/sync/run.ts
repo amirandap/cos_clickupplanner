@@ -3,7 +3,7 @@ import { toJson } from "@/lib/db/json";
 import { getRemoteTask, listRemoteTasks } from "@/lib/clickup/tasks";
 import { calendarId, listRemoteEvents } from "@/lib/google/calendar";
 import { googleEventDate } from "@/lib/google/validation";
-import { getConfiguredListIds, isTaskInScope } from "@/lib/planner/config";
+import { getConfiguredListIds, isAssignedToDefault, isTaskInScope, taskScopeWhere } from "@/lib/planner/config";
 import { withMutationLock } from "@/lib/planner/locking";
 import { ProviderHttpError } from "@/lib/providers/http";
 
@@ -16,16 +16,16 @@ export async function syncClickUp() {
   return withMutationLock("planner", async () => {
     // Every page must succeed before a complete snapshot may remove cached rows.
     const started = new Date();
-    const snapshot = (await listRemoteTasks()).filter((task) => isTaskInScope({ listId: task.list?.id ?? null }));
+    const snapshot = (await listRemoteTasks()).filter((task) => isTaskInScope({ listId: task.list?.id ?? null, rawJson: task }));
     const listIds = getConfiguredListIds();
     const tasksById = new Map(snapshot.map((task) => [task.id, task]));
-    const cachedTasks = await db.clickUpTask.findMany({ where: { listId: { in: listIds } }, select: { id: true } });
+    const cachedTasks = await db.clickUpTask.findMany({ where: taskScopeWhere(), select: { id: true } });
     // Offset pages can shift when tasks change during pagination. Absence alone
     // is insufficient: confirm each missing task individually before removal.
     for (const cached of cachedTasks) {
       if (tasksById.has(cached.id)) continue;
       const current = await getRemoteTask(cached.id);
-      if (current && isTaskInScope({ listId: current.list?.id ?? null })) tasksById.set(current.id, current);
+      if (current && isTaskInScope({ listId: current.list?.id ?? null, rawJson: current })) tasksById.set(current.id, current);
     }
     const tasks = [...tasksById.values()];
     await db.$transaction(async (tx) => {
@@ -36,12 +36,12 @@ export async function syncClickUp() {
         const data = {
           title: task.name, status: task.status?.status ?? null, priority: task.priority?.priority ?? null,
           dueDate: fromMillis(task.due_date), estimateMin: task.time_estimate ? Math.ceil(task.time_estimate / 60000) : null,
-          url: task.url ?? null, listId: task.list?.id ?? null, rawJson: toJson(task), remoteUpdated: updated, syncedAt: started,
+          url: task.url ?? null, listId: task.list?.id ?? null, rawJson: toJson(task), assignedToMe: isAssignedToDefault(task), remoteUpdated: updated, syncedAt: started,
         };
         await tx.clickUpTask.upsert({ where: { id: task.id }, create: { id: task.id, ...data }, update: data });
       }
       const missing = await tx.clickUpTask.findMany({
-        where: { listId: { in: listIds }, id: { notIn: tasks.map((task) => task.id) } }, select: { id: true },
+        where: { AND: [taskScopeWhere(), { id: { notIn: tasks.map((task) => task.id) } }] }, select: { id: true },
       });
       const missingIds = missing.map((task) => task.id);
       if (missingIds.length) {

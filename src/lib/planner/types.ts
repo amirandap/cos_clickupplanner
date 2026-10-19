@@ -16,6 +16,7 @@ export type PlannerTask = {
   description: string | null;
   actionUrl: string | null;
   plannedCount: number;
+  plannedEvent: { id: string; startAt: string } | null;
   completed: boolean;
   assignees: PlannerAssignee[];
 };
@@ -32,6 +33,9 @@ export type PlannerEvent = {
   clickupTaskId: string | null;
   plannerOwned: boolean;
   recurring: boolean;
+  hasMeet?: boolean;
+  location?: string | null;
+  htmlLink?: string | null;
 };
 
 export type PlannerData = {
