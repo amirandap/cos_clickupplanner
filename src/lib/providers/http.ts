@@ -1,6 +1,8 @@
 /** Provider errors carry a status without exposing upstream bodies or credentials. */
 export class ProviderHttpError extends Error {
   readonly status = 502;
+  /** OAuth `error` code (e.g. "invalid_grant") when the caller asked for it. Never the raw body. */
+  errorCode?: string;
   constructor(public readonly provider: string, public readonly upstreamStatus: number, message?: string) {
     super(message ?? `${provider} API ${upstreamStatus}`);
     this.name = "ProviderHttpError";
@@ -24,7 +26,7 @@ export async function requestJson(
   provider: string,
   url: string,
   init: RequestInit = {},
-  options: { retrySafe?: boolean; timeoutMs?: number } = {},
+  options: { retrySafe?: boolean; timeoutMs?: number; parseErrorCode?: boolean } = {},
 ): Promise<unknown> {
   const attempts = options.retrySafe ? 2 : 1;
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -37,8 +39,12 @@ export async function requestJson(
           await response.body?.cancel();
           continue;
         }
-        await response.body?.cancel();
-        throw new ProviderHttpError(provider, response.status);
+        const failure = new ProviderHttpError(provider, response.status);
+        if (options.parseErrorCode) {
+          const body: unknown = await response.json().catch(() => null);
+          if (record(body) && typeof body.error === "string" && /^[a-z_]{1,64}$/.test(body.error)) failure.errorCode = body.error;
+        } else await response.body?.cancel();
+        throw failure;
       }
       if (response.status === 204) return undefined;
       try { return await response.json(); }
