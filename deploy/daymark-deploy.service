@@ -8,3 +8,4 @@ Type=oneshot
 ExecStart=/opt/daymark/source/deploy/deploy.sh
 TimeoutStartSec=1200
 Nice=10
+Environment=HOME=/root
