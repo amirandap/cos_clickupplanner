@@ -3,9 +3,9 @@
 # Se ejecuta como root (timer de systemd). Rollback automático si falla el health check.
 set -euo pipefail
 
-SOURCE_DIR="${DAYMARK_SOURCE:-/opt/daymark/source}"
-RELEASES_DIR="${DAYMARK_RELEASES:-/opt/daymark/releases}"
-CURRENT_LINK="${DAYMARK_CURRENT:-/opt/daymark/current}"
+SOURCE_DIR="${DAYMARK_SOURCE:-/opt/cos_clickupplanner/source}"
+RELEASES_DIR="${DAYMARK_RELEASES:-/opt/cos_clickupplanner/releases}"
+CURRENT_LINK="${DAYMARK_CURRENT:-/opt/cos_clickupplanner/current}"
 STATE_DIR="${DAYMARK_STATE:-/var/lib/daymark}"
 DB_FILE="$STATE_DIR/app.db"
 BACKUP_DIR="$STATE_DIR/backups"

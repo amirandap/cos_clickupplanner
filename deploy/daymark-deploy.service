@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/daymark/source/deploy/deploy.sh
+ExecStart=/opt/cos_clickupplanner/source/deploy/deploy.sh
 TimeoutStartSec=1200
 Nice=10
 Environment=HOME=/root
