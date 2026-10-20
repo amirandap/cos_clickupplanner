@@ -1,5 +1,5 @@
 import { db } from "@/lib/db/client";
-import { allowedDomain, bootstrapAdminEmail } from "@/lib/config/env";
+import { allowedDomain, bootstrapAdminEmail, defaultTimezone } from "@/lib/config/env";
 import { emailDomain, type GoogleIdentity } from "@/lib/auth/id-token";
 
 export const LEGACY_USER_ID = "legacy-single-user";
@@ -31,5 +31,5 @@ export async function userForIdentity(identity: GoogleIdentity, now = new Date()
     });
     if (claimed.count === 1) return db.user.findUniqueOrThrow({ where: { id: LEGACY_USER_ID } });
   }
-  return db.user.create({ data: { googleSub: identity.sub, email: identity.email, name: identity.name, lastLoginAt: now, settings: { create: {} } } });
+  return db.user.create({ data: { googleSub: identity.sub, email: identity.email, name: identity.name, lastLoginAt: now, settings: { create: { timezone: defaultTimezone() } } } });
 }
