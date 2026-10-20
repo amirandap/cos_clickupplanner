@@ -53,6 +53,7 @@ mkdir -p "$release/.next"
 cp -a .next/standalone/. "$release/"
 cp -a .next/static "$release/.next/static"
 cp -a public "$release/public"
+mkdir -p -m 700 "$release/.next/cache"
 echo "$remote_sha" > "$release/.deployed-sha"
 chown -R "$APP_USER:$APP_USER" "$RELEASES_DIR/$stamp"
 
