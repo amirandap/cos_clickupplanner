@@ -64,6 +64,13 @@ export function isPlannerData(value: unknown): value is PlannerData {
   return tasksValid && eventsValid;
 }
 
+/** A full page load on purpose: it drops all client state once the session is gone. */
+export function goToLogin() {
+  if (typeof window === "undefined") return;
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+  window.location.href = "/login";
+}
+
 export async function requestJson<T>(url: string, init: RequestInit, validate: Validator<T>, fetcher: Fetcher = fetch): Promise<T> {
   let response: Response;
   try { response = await fetcher(url, { ...init, cache: "no-store" }); }
@@ -74,6 +81,7 @@ export async function requestJson<T>(url: string, init: RequestInit, validate: V
     if (!response.ok) throw new PlannerHttpError(response.status, "No se pudo completar la solicitud. Intenta de nuevo.");
     throw new Error("No se pudo leer la respuesta. Intenta de nuevo.");
   }
+  if (response.status === 401) goToLogin();
   if (!response.ok) {
     throw new PlannerHttpError(response.status, isRecord(data) && typeof data.error === "string" ? data.error : "No se pudo completar la solicitud. Intenta de nuevo.");
   }

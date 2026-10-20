@@ -1,5 +1,5 @@
 import { Avatar } from "@base-ui/react/avatar";
-import { ChevronLeft, ChevronRight, RotateCw, UsersRound } from "lucide-react";
+import { ChevronLeft, ChevronRight, LogOut, RotateCw, Settings, UsersRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { PlannerAssignee } from "@/lib/planner/types";
 
@@ -20,6 +20,8 @@ type ToolbarProps = {
   onView: (view: CalendarView) => void;
   onAssignee: (id: string) => void;
   onSync: () => void;
+  onLogout: () => void;
+  userEmail?: string;
 };
 
 export function PlannerToolbar(props: ToolbarProps) {
@@ -48,6 +50,9 @@ export function PlannerToolbar(props: ToolbarProps) {
       <Button variant="outline" size="icon-sm" aria-label="Sincronizar" title="Sincronizar" disabled={props.busy} onClick={props.onSync}>
         <RotateCw size={16} className={props.busy ? "animate-spin" : ""} />
       </Button>
+      <a href="/settings" aria-label="Ajustes" title={props.userEmail ? `Ajustes (${props.userEmail})` : "Ajustes"}
+        className="inline-flex size-7 items-center justify-center rounded-lg border border-border bg-background hover:bg-muted"><Settings size={16} /></a>
+      <Button variant="outline" size="icon-sm" aria-label="Cerrar sesión" title="Cerrar sesión" onClick={props.onLogout}><LogOut size={16} /></Button>
     </div>
   </header>;
 }
