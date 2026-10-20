@@ -2,6 +2,7 @@
 # Auto-deploy: si origin/main avanzó, construye un release nuevo, migra, conmuta y reinicia.
 # Se ejecuta como root (timer de systemd). Rollback automático si falla el health check.
 set -euo pipefail
+export HOME=/root # sudo conserva el HOME del invocador; doppler lo necesita
 
 SOURCE_DIR="${DAYMARK_SOURCE:-/opt/cos_clickupplanner/source}"
 RELEASES_DIR="${DAYMARK_RELEASES:-/opt/cos_clickupplanner/releases}"
@@ -21,7 +22,7 @@ log() { printf '%s daymark-deploy: %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
 main() {
 exec 9>/var/lock/daymark-deploy.lock
-flock -n 9 || { log "otro despliegue en curso"; exit 0; }
+flock -w 600 9 || { log "otro despliegue sigue en curso tras 10 min"; exit 1; }
 
 cd "$SOURCE_DIR"
 git fetch --quiet origin main
