@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { db } from "@/lib/db/client";
-import { appTimezone, assertCalendarInScope, assertTaskInScope } from "@/lib/planner/config";
+import { appTimezone, assertCalendarInScope, assertTaskInScope, getConfiguredListIds, getDefaultAssigneeId, isAssignedToDefault } from "@/lib/planner/config";
 import { withMutationLock } from "@/lib/planner/locking";
 import { syncClickUp } from "@/lib/sync/run";
 import { toJson } from "@/lib/db/json";
 import { googleEventDate } from "@/lib/google/validation";
 import { createRemoteEvent, deleteRemoteEvent, getRemoteEvent, linkRemoteEvent, renameRemoteEvent, unlinkRemoteEvent, updateRemoteEvent, calendarId } from "@/lib/google/calendar";
 import type { RemoteCalendarEvent } from "@/lib/google/calendar";
-import { archiveRemoteTask, completeRemoteTask, createRemoteTaskComment, getClosedStatus, getRemoteTask, updateRemoteTaskDueDate } from "@/lib/clickup/tasks";
+import { archiveRemoteTask, completeRemoteTask, createRemoteTask, createRemoteTaskComment, getClosedStatus, getRemoteTask, updateRemoteTaskDueDate } from "@/lib/clickup/tasks";
 
 function invalid(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
@@ -76,7 +76,7 @@ export async function scheduleTask(taskId: string, startInput: unknown, operatio
     const reused = !!operation;
     if (operation && operation.payloadHash !== payloadHash) invalid("Idempotency-Key ya se utilizó con otra tarea, fecha o calendario", 409);
     if (!operation) {
-      const duration = task.estimateMin && task.estimateMin > 0 ? task.estimateMin : 30;
+      const duration = 30;
       const eventHash = createHash("sha256").update(operationId).digest("hex");
       operation = await db.scheduleOperation.create({ data: {
         id: operationId, payloadHash, calendarEventId: `${process.env.USE_MOCK_DATA === "true" ? "mock-" : "planner"}${eventHash}`,
@@ -313,5 +313,25 @@ export async function archiveTask(id: string) {
       db.taskEventLink.deleteMany({ where: { clickupTaskId: id } }),
       db.clickUpTask.delete({ where: { id } }),
     ]);
+  });
+}
+
+/** Creates a task in the AMP list (first configured list); ClickUp places it in its initial backlog status. */
+export async function createTask(titleInput: unknown) {
+  const title = typeof titleInput === "string" ? titleInput.trim() : "";
+  if (!title) invalid("Título inválido");
+  if (title.length > 500) invalid("El título es demasiado largo");
+  const listId = process.env.USE_MOCK_DATA === "true" ? "mock-list" : getConfiguredListIds()[0];
+  if (!listId) invalid("Configura CLICKUP_LIST_IDS para crear tareas");
+  return withMutationLock("planner", async () => {
+    const task = await createRemoteTask(listId, title, getDefaultAssigneeId());
+    const updated = task.date_updated ? new Date(Number(task.date_updated)) : new Date();
+    const data = {
+      title: task.name, status: task.status?.status ?? null, priority: task.priority?.priority ?? null,
+      dueDate: null, estimateMin: null, url: task.url ?? null, listId: task.list?.id ?? listId, rawJson: toJson(task),
+      assignedToMe: isAssignedToDefault(task), remoteUpdated: updated, syncedAt: new Date(),
+    };
+    await db.clickUpTask.upsert({ where: { id: task.id }, create: { id: task.id, ...data }, update: data });
+    return { id: task.id };
   });
 }

@@ -97,6 +97,15 @@ export async function getRemoteTask(id: string): Promise<RemoteClickUpTask | nul
   }
 }
 
+export async function createRemoteTask(listId: string, name: string, assigneeId: string | null) {
+  if (process.env.USE_MOCK_DATA === "true") {
+    return { id: `mock-task-${crypto.randomUUID()}`, name, status: { status: "0. backlog", type: "open" }, list: { id: listId }, date_updated: String(Date.now()), date_created: String(Date.now()) } as RemoteClickUpTask;
+  }
+  const body: Record<string, unknown> = { name };
+  if (assigneeId && /^\d+$/.test(assigneeId)) body.assignees = [Number(assigneeId)];
+  return validateTask(await clickupRequest(`/list/${encodeURIComponent(listId)}/task`, { method: "POST", body: JSON.stringify(body) }, false));
+}
+
 export async function completeRemoteTask(id: string, status: string) {
   if (process.env.USE_MOCK_DATA === "true") return { status: { status } };
   return validateTask(await clickupRequest(`/task/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify({ status }) }));

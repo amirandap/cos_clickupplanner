@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { Archive, CalendarCheck, CalendarX, CalendarPlus, GripVertical, Search } from "lucide-react";
+import { Archive, Plus, CalendarCheck, CalendarX, CalendarPlus, GripVertical, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { PlannerTask } from "@/lib/planner/types";
 import { dateLabel, taskAgeLabel } from "./dates";
@@ -14,11 +14,12 @@ type TaskPanelProps = {
   onSearch: (value: string) => void;
   onSchedule: (task: PlannerTask) => void;
   onArchive: (task: PlannerTask) => void;
+  onCreate: (title: string) => void;
   onShowPlanned: (task: PlannerTask) => void;
   listRef: RefObject<HTMLDivElement | null>;
 };
 
-export function TaskPanel({ hideScheduled, onToggleScheduled, groups, timezone, search, busy, onSearch, onSchedule, onArchive, onShowPlanned, listRef }: TaskPanelProps) {
+export function TaskPanel({ hideScheduled, onToggleScheduled, groups, timezone, search, busy, onSearch, onSchedule, onArchive, onCreate, onShowPlanned, listRef }: TaskPanelProps) {
   return <section className="task-panel" aria-label="Tareas de ClickUp">
     <div className="task-search">
       <Search size={16} />
@@ -33,6 +34,9 @@ export function TaskPanel({ hideScheduled, onToggleScheduled, groups, timezone, 
         <h2 className="task-status-heading"><span>{status}</span><span>{tasks.length}</span></h2>
         {tasks.map((task) => <TaskCard key={task.id} task={task} timezone={timezone} busy={busy} onSchedule={onSchedule} onArchive={onArchive} onShowPlanned={onShowPlanned} />)}
       </section>) : <div className="empty-tasks">No hay tareas que coincidan.</div>}
+      {search.trim() && <button type="button" className="task-create" disabled={busy} onClick={() => onCreate(search.trim())}>
+        <Plus size={14} />Crear «{search.trim()}» en AMP · backlog
+      </button>}
     </div>
     <div className="panel-footer"><GripVertical size={14} />Agenda una tarea o arrástrala a una hora o sobre un evento</div>
   </section>;

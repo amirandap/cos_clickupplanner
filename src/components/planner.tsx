@@ -53,6 +53,17 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     });
   }
 
+  function createTask(title: string) {
+    void run(() => requestJson("/api/planner/tasks", jsonRequest("PUT", { title }), isMutationResult)).then((saved) => {
+      if (!saved) return;
+      setPinnedTitle(title.toLowerCase());
+      setSearch("");
+      setHideScheduled(false);
+      setSelectedAssigneeId("all");
+      taskListRef.current?.scrollTo({ top: 0 });
+    });
+  }
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key.toLowerCase() !== "z") return;
@@ -69,6 +80,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [run]);
   const [search, setSearch] = useState("");
+  const [pinnedTitle, setPinnedTitle] = useState<string | null>(null);
   const [selectedAssigneeId, setSelectedAssigneeId] = useState(() => initialData.defaultAssigneeId
     && initialData.tasks.some((task) => task.assignees.some((person) => person.id === initialData.defaultAssigneeId))
     ? initialData.defaultAssigneeId : "all");
@@ -191,8 +203,12 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       tasks.push(task);
       groups.set(status, tasks);
     }
+    if (pinnedTitle) for (const tasks of groups.values()) {
+      const index = tasks.findIndex((task) => task.title.toLowerCase() === pinnedTitle);
+      if (index > 0) tasks.unshift(...tasks.splice(index, 1));
+    }
     return [...groups];
-  }, [data.tasks, search, selectedAssigneeId, hideScheduled]);
+  }, [data.tasks, search, selectedAssigneeId, hideScheduled, pinnedTitle]);
 
   const selectedTask = selected?.clickupTaskId ? data.tasks.find((task) => task.id === selected.clickupTaskId) : null;
   const schedulingTask = data.tasks.find((task) => task.id === scheduleTaskId);
@@ -413,7 +429,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
             hideScheduledRef.current = next; setHideScheduled(next);
             if (currentDateRef.current) writeUrl(view, currentDateRef.current, selectedAssigneeId);
           }} groups={groupedTasks} timezone={timezone} search={search} busy={busy} onSearch={setSearch}
-          onSchedule={beginSchedule} onShowPlanned={showPlanned} onArchive={(task) => {
+          onSchedule={beginSchedule} onCreate={createTask} onShowPlanned={showPlanned} onArchive={(task) => {
             archiveTask(task);
           }} listRef={taskListRef} />
       </Panel>
@@ -430,7 +446,7 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
               locale={esLocale} timeZone={timezone} headerToolbar={false} navLinks={!busy} navLinkDayClick={(date) => {
                 if (busy) return;
                 setView("timeGridDay"); calendarRef.current?.getApi().changeView("timeGridDay", date);
-              }} allDaySlot allDayText="∞" slotMinTime="06:00:00" slotMaxTime="23:00:00" slotDuration="00:30:00" slotLabelInterval="01:00:00"
+              }} allDaySlot allDayText="∞" slotMinTime="06:00:00" slotMaxTime="23:00:00" slotDuration="00:30:00" snapDuration="00:15:00" defaultTimedEventDuration="00:30:00" slotLabelInterval="01:00:00"
               slotLabelFormat={(arg) => { const h = arg.date.hour; return `${h % 12 || 12} ${h < 12 ? "AM" : "PM"}`; }} displayEventTime={false} nowIndicator height="auto" contentHeight="auto"
               expandRows slotEventOverlap eventMinHeight={22} droppable={!busy} editable={!busy} selectable={!busy} eventDurationEditable={!busy} events={events}
               eventContent={(arg) => (
