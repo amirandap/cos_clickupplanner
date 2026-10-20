@@ -1,0 +1,10 @@
+[Unit]
+Description=Daymark auto-deploy desde origin/main
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/daymark/source/deploy/deploy.sh
+TimeoutStartSec=1200
+Nice=10

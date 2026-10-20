@@ -14,7 +14,7 @@ test("sync reports pending ClickUp results as partial success instead of pending
       "@/lib/db/client": { db: f.db }, "@/lib/planner/http": http,
       "@/lib/sync/run": { syncClickUp: async () => 2, syncGoogle: async () => 3 },
       "@/lib/planner/actions": { syncTaskSchedule: async () => ({ clickupSyncPending: true, warning: "ClickUp pendiente" }) },
-      "@/lib/planner/config": { getConfiguredListIds: () => ["configured-list"], getConfiguredCalendarId: () => "configured-calendar" },
+      "@/lib/planner/config": { getConfiguredListIds: () => ["configured-list"], getConfiguredCalendarId: () => "configured-calendar", taskScopeWhere: () => ({ listId: { in: ["configured-list"] } }) },
       "@/lib/planner/locking": locking,
     });
     const response = await route.POST(new Request("https://planner.test/api/sync", { method: "POST" }));

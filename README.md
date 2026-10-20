@@ -47,6 +47,8 @@ Las pruebas de integración usan bases SQLite temporales con las migraciones rea
 
 Para un servidor que actualiza desde Git, clona este repositorio en un directorio de código separado del release activo. Antes de cada despliegue, haz backup consistente de SQLite, ejecuta `git pull --ff-only`, `npm ci`, `npx prisma migrate deploy` y `npm run build` con las variables de Doppler. Copia el resultado standalone a un release nuevo, cambia el enlace del release activo y reinicia el servicio. Mantén la base SQLite fuera de los releases. Comprueba la respuesta HTTP y el estado de PM2 antes de retirar el release anterior.
 
+Despliegue automático: `deploy/deploy.sh` compara `origin/main` con el release activo; si hay cambios hace backup de SQLite, `npm ci`, `prisma migrate deploy`, build, release nuevo, conmutación del enlace, reinicio y health check (rollback automático si falla). `deploy/daymark-deploy.timer` lo ejecuta cada 2 minutos. Instalación: copia `daymark-deploy.service` y `.timer` a `/etc/systemd/system/` y ejecuta `systemctl enable --now daymark-deploy.timer`. Bitácora: `journalctl -u daymark-deploy`.
+
 Para acceso solo por Tailscale, publica en DNS un registro A **sin proxy** que apunte a la IP Tailscale del servidor y haz que el proxy web escuche únicamente en esa IP. Configura TLS por desafío DNS. El registro DNS es público, pero la IP Tailscale solo es alcanzable desde el tailnet autorizado.
 
 ## Licencia

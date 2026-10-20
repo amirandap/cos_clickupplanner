@@ -14,7 +14,7 @@ function google() {
 }
 function clickup() {
   return loadModule<typeof import("../src/lib/clickup/tasks")>("src/lib/clickup/tasks.ts", {
-    "@/lib/db/client": { db }, "@/lib/planner/config": { getConfiguredListIds: () => ["list-a"] },
+    "@/lib/db/client": { db }, "@/lib/planner/config": { getConfiguredListIds: () => ["list-a"], getDefaultAssigneeId: () => undefined },
   });
 }
 const validEvent = { id: "abcde", start: { dateTime: "2026-10-16T10:00:00Z" }, end: { dateTime: "2026-10-16T11:00:00Z" } };

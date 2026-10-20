@@ -1,0 +1,10 @@
+[Unit]
+Description=Revisa origin/main cada 2 minutos y despliega Daymark
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
