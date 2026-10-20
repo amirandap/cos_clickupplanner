@@ -203,7 +203,7 @@ test("a lost response followed by lock contention preserves the schedule key acr
       let now = 0;
       const clock = t.mock.method(Date, "now", () => (now += 70_000));
       try {
-        await locking.withMutationLock("planner", async () => { throw new Error("Must not run while held"); });
+        await locking.withMutationLock("planner:user-a", async () => { throw new Error("Must not run while held"); });
       } catch (error) {
         const response = http.apiFailure(error);
         assert.equal(response.status, 423);
