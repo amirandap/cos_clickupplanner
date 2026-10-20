@@ -1,51 +1,50 @@
-export function appTimezone() {
-  return process.env.APP_TIMEZONE || "UTC";
+import { NotFoundError } from "@/lib/planner/http";
+
+/** Everything the planner needs to know about the signed-in user. Built from UserSettings. */
+export type UserContext = {
+  userId: string;
+  calendarId: string;
+  listIds: string[];
+  timezone: string;
+  clickupUserId: string | null;
+  mock: boolean;
+};
+
+type ScopedTask = { listId: string | null; rawJson?: unknown } | null;
+
+export const MOCK_LIST_ID = "mock-list";
+export const MOCK_CALENDAR_ID = "mock-calendar";
+
+export function parseListIds(value: string) {
+  return [...new Set(value.split(",").map((id) => id.trim()).filter(Boolean))];
 }
 
-export function getConfiguredListIds() {
-  return [...new Set((process.env.CLICKUP_LIST_IDS ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
+export function lockKey(ctx: Pick<UserContext, "userId">) {
+  return `planner:${ctx.userId}`;
 }
 
-export function getConfiguredCalendarId() {
-  return process.env.USE_MOCK_DATA === "true" ? "mock-calendar" : process.env.GOOGLE_CALENDAR_ID || "primary";
-}
-
-export function getDefaultAssigneeId() {
-  return process.env.CLICKUP_DEFAULT_ASSIGNEE_ID?.trim() || null;
-}
-
-export function isAssignedToDefault(raw: unknown) {
-  const me = getDefaultAssigneeId();
+export function isAssignedTo(clickupUserId: string | null, raw: unknown) {
   const assignees = raw && typeof raw === "object" && "assignees" in raw ? (raw as { assignees?: unknown }).assignees : null;
-  return !!me && Array.isArray(assignees) && assignees.some((person) => person && typeof person === "object" && String((person as { id?: unknown }).id) === me);
+  return !!clickupUserId && Array.isArray(assignees) && assignees.some((person) => person && typeof person === "object" && String((person as { id?: unknown }).id) === clickupUserId);
 }
 
-/** Prisma filter for tasks in configured lists or assigned to the default assignee. */
-export function taskScopeWhere() {
-  return process.env.USE_MOCK_DATA === "true"
-    ? { listId: "mock-list" }
-    : { OR: [{ listId: { in: getConfiguredListIds() } }, { assignedToMe: true }] };
-}
-
-export function isTaskInScope(task: { listId: string | null; assignedToMe?: boolean; rawJson?: unknown } | null) {
+/** In scope: in one of the user's lists or assigned to the user's ClickUp id. */
+export function isTaskInScope(ctx: UserContext, task: ScopedTask) {
   if (!task) return false;
-  if (process.env.USE_MOCK_DATA === "true") return task.listId === "mock-list";
-  if (task.listId === "mock-list") return false;
-  return (task.listId !== null && getConfiguredListIds().includes(task.listId)) || task.assignedToMe === true || isAssignedToDefault(task.rawJson);
+  if (ctx.mock) return task.listId === MOCK_LIST_ID;
+  if (task.listId === MOCK_LIST_ID) return false;
+  return (task.listId !== null && ctx.listIds.includes(task.listId)) || isAssignedTo(ctx.clickupUserId, task.rawJson);
 }
 
-export function isCalendarInScope(id: string) {
-  return id === getConfiguredCalendarId();
+/** Prisma filter: only tasks that this user's own ClickUp token has fetched and that they have not archived. */
+export function userTaskWhere(ctx: Pick<UserContext, "userId">) {
+  return { users: { some: { userId: ctx.userId, archivedAt: null } } };
 }
 
-export class ScopeError extends Error {
-  readonly status = 403;
+export function assertTaskInScope(ctx: UserContext, task: ScopedTask) {
+  if (!isTaskInScope(ctx, task)) throw new NotFoundError("Tarea no encontrada");
 }
 
-export function assertTaskInScope(task: { listId: string | null; assignedToMe?: boolean; rawJson?: unknown } | null) {
-  if (!isTaskInScope(task)) throw new ScopeError("La tarea no está en las listas configuradas ni asignada a ti");
-}
-
-export function assertCalendarInScope(id: string) {
-  if (!isCalendarInScope(id)) throw new ScopeError("El evento no pertenece al calendario configurado");
+export function assertCalendarInScope(ctx: UserContext, id: string) {
+  if (id !== ctx.calendarId) throw new NotFoundError("Evento no encontrado");
 }

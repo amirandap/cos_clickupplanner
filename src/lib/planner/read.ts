@@ -1,6 +1,6 @@
 import { db } from "@/lib/db/client";
 import type { PlannerAssignee, PlannerData } from "./types";
-import { appTimezone, getConfiguredCalendarId, taskScopeWhere } from "./config";
+import { isTaskInScope, userTaskWhere, type UserContext } from "./config";
 import { expandCalendarEvents } from "../google/recurrences";
 
 function taskAssignees(rawJson: unknown): PlannerAssignee[] {
@@ -23,21 +23,20 @@ function taskDetails(rawJson: unknown) {
   return { description: text.replace(/\s+/g, " ").trim().slice(0, 300) || null, actionUrl, createdAt: Number.isFinite(created) && created > 0 ? new Date(created).toISOString() : null };
 }
 
-export async function readPlanner(range?: { startAt: Date; endAt: Date }): Promise<PlannerData> {
-  const defaultAssigneeId = process.env.CLICKUP_DEFAULT_ASSIGNEE_ID || null;
+export async function readPlanner(ctx: UserContext, range?: { startAt: Date; endAt: Date }): Promise<PlannerData> {
   const startAt = range?.startAt ?? new Date(Date.now() - 14 * 86400000);
   const endAt = range?.endAt ?? new Date(Date.now() + 14 * 86400000);
-  const mockMode = process.env.USE_MOCK_DATA === "true";
-  const selectedCalendar = getConfiguredCalendarId();
-  const [tasks, events, syncStates] = await Promise.all([
-    db.clickUpTask.findMany({ where: taskScopeWhere(), orderBy: [{ status: "asc" }, { dueDate: "asc" }, { title: "asc" }] }),
+  const [cachedTasks, events, syncStates] = await Promise.all([
+    db.clickUpTask.findMany({ where: userTaskWhere(ctx), orderBy: [{ status: "asc" }, { dueDate: "asc" }, { title: "asc" }] }),
     // Masters and original-time exceptions may start outside the requested range.
     // Read the selected calendar cache once and expand only the visible range.
-    db.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, orderBy: { startAt: "asc" } }),
-    db.syncState.findMany({ where: { id: { in: mockMode ? ["mock"] : [`google:${selectedCalendar}`, "clickup"] } }, orderBy: { lastSyncAt: "desc" }, take: 1 }),
+    db.calendarEvent.findMany({ where: { userId: ctx.userId, calendarId: ctx.calendarId }, orderBy: { startAt: "asc" } }),
+    db.syncState.findMany({ where: { userId: ctx.userId, id: { in: ctx.mock ? ["mock"] : [`google:${ctx.calendarId}`, "clickup"] } }, orderBy: { lastSyncAt: "desc" }, take: 1 }),
   ]);
+  // Settings changes take effect immediately: membership says the user's token saw the task, scope says it is theirs.
+  const tasks = cachedTasks.filter((task) => isTaskInScope(ctx, task));
   const links = await db.taskEventLink.findMany({ where: {
-    clickupTaskId: { in: tasks.map((task) => task.id) }, calendarEventId: { in: events.map((event) => event.id) },
+    userId: ctx.userId, clickupTaskId: { in: tasks.map((task) => task.id) }, calendarEventId: { in: events.map((event) => event.id) },
   } });
   const counts = new Map<string, number>();
   const eventsById = new Map(events.map((event) => [event.id, event]));
@@ -64,9 +63,9 @@ export async function readPlanner(range?: { startAt: Date; endAt: Date }): Promi
       assignees: taskAssignees(task.rawJson),
     })),
     events: expandCalendarEvents(events, { startAt, endAt }),
-    mockMode,
-    timezone: appTimezone(),
-    defaultAssigneeId,
+    mockMode: ctx.mock,
+    timezone: ctx.timezone,
+    defaultAssigneeId: ctx.clickupUserId,
     lastSyncAt: syncStates[0]?.lastSyncAt?.toISOString() ?? null,
   };
 }
