@@ -32,6 +32,11 @@ if [ "$local_sha" = "$remote_sha" ] && [ -e "$CURRENT_LINK/.deployed-sha" ] \
   exit 0
 fi
 
+failed_file="$STATE_DIR/last-failed-sha"
+if [ "$(cat "$failed_file" 2>/dev/null || true)" = "$remote_sha" ]; then
+  exit 0 # este commit ya falló y se revirtió; esperar un commit nuevo
+fi
+
 log "desplegando ${local_sha:0:7} -> ${remote_sha:0:7}"
 git merge --ff-only origin/main
 
@@ -71,7 +76,8 @@ for _ in $(seq 1 30); do
 done
 
 if [ "$healthy" != 1 ]; then
-  log "health check falló; rollback a $previous"
+  log "health check falló (HTTP ${code:-sin respuesta}); rollback a $previous"
+  echo "$remote_sha" > "$failed_file"
   ln -sfn "$previous" "$CURRENT_LINK.next" && mv -T "$CURRENT_LINK.next" "$CURRENT_LINK"
   systemctl restart "$SERVICE"
   exit 1
