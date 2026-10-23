@@ -1,15 +1,22 @@
 import { NextResponse } from "next/server";
-import { appUrl, beginOAuth } from "@/lib/sync/oauth";
+import { apiFailure } from "@/lib/planner/http";
+import { googleClient } from "@/lib/config/env";
+import { calendarAuthorizationUrl } from "@/lib/auth/google-oauth";
+import { startFlow } from "@/lib/auth/flows";
+import { requireUser } from "@/lib/auth/require-user";
 
 export const runtime = "nodejs";
-export function GET() {
-  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) return NextResponse.json({ error: "Configura GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET" }, { status: 400 });
-  const target = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  target.searchParams.set("client_id", process.env.GOOGLE_CLIENT_ID);
-  target.searchParams.set("redirect_uri", `${appUrl()}/api/auth/google/callback`);
-  target.searchParams.set("response_type", "code");
-  target.searchParams.set("scope", "https://www.googleapis.com/auth/calendar.events");
-  target.searchParams.set("access_type", "offline");
-  target.searchParams.set("prompt", "consent");
-  return beginOAuth("google", target);
+export const dynamic = "force-dynamic";
+
+/** Step 2 of the Google connection: explicit Calendar consent, bound to the signed-in session. */
+export async function GET(request: Request) {
+  try {
+    const user = await requireUser(request);
+    googleClient();
+    const flow = await startFlow("calendar", { userId: user.id, sessionId: user.sessionId });
+    const response = NextResponse.redirect(calendarAuthorizationUrl(flow, user.email), 303);
+    response.headers.append("Set-Cookie", flow.setCookie);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  } catch (error) { return apiFailure(error); }
 }

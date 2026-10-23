@@ -1,15 +1,5 @@
 import { ProviderPayloadError, record } from "../providers/http";
 
-export type OAuthProvider = "google" | "clickup";
-
-export function oauthClient(provider: OAuthProvider) {
-  const prefix = provider === "google" ? "GOOGLE" : "CLICKUP";
-  const clientId = process.env[`${prefix}_CLIENT_ID`];
-  const clientSecret = process.env[`${prefix}_CLIENT_SECRET`];
-  if (!clientId?.trim() || !clientSecret?.trim()) throw new Error("Falta la configuración del cliente OAuth");
-  return { clientId, clientSecret };
-}
-
 function accessToken(value: unknown, provider: string) {
   if (!record(value) || typeof value.access_token !== "string" || !value.access_token.trim()
     || (value.refresh_token !== undefined && typeof value.refresh_token !== "string")) {
@@ -27,9 +17,6 @@ export function validateGoogleToken(value: unknown, now = Date.now()) {
   if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= now) {
     throw new ProviderPayloadError("Google OAuth", "vencimiento");
   }
-  return { ...token, expiresAt };
-}
-
-export function validateClickUpToken(value: unknown) {
-  return accessToken(value, "ClickUp OAuth");
+  const scope = typeof value.scope === "string" ? value.scope : null;
+  return { ...token, expiresAt, scope };
 }

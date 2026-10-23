@@ -1,3 +1,5 @@
+import { appOrigin } from "@/lib/config/env";
+
 export class HttpError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
@@ -10,6 +12,35 @@ export class OriginError extends HttpError {
   }
 }
 
+export class UnauthorizedError extends HttpError {
+  constructor() {
+    super(401, "Se requiere autenticación.");
+  }
+}
+
+/** A foreign resource is indistinguishable from a missing one. */
+export class NotFoundError extends HttpError {
+  constructor(message = "No encontrado") {
+    super(404, message);
+  }
+}
+
+export class RateLimitError extends HttpError {
+  constructor(public readonly retryAfter: number) {
+    super(429, "Demasiadas solicitudes. Intenta de nuevo en unos segundos.");
+  }
+}
+
+/** A stored credential was revoked or expired for good; the user must reconnect it in Settings. */
+export class ReconnectRequiredError extends HttpError {
+  readonly code = "reconnect_required";
+  constructor(public readonly provider: "google_calendar" | "clickup") {
+    super(409, provider === "google_calendar"
+      ? "Google Calendar se desconectó. Vuelve a conectarlo en Ajustes."
+      : "El token de ClickUp ya no es válido. Pégalo de nuevo en Ajustes.");
+  }
+}
+
 export function apiFailure(error: unknown) {
   const status = error instanceof Error && "status" in error &&
     typeof error.status === "number" && Number.isInteger(error.status) &&
@@ -19,7 +50,8 @@ export function apiFailure(error: unknown) {
   const message = error instanceof Error && "status" in error
     ? error.message
     : status === 400 ? "La solicitud no es válida." : "No se pudo completar la operación.";
-  return Response.json({ error: message }, {
+  const code = error instanceof Error && "code" in error && error.code === "reconnect_required" ? { code: "reconnect_required" } : {};
+  return Response.json({ error: message, ...code }, {
     status,
     headers: {
       "Cache-Control": "no-store",
@@ -30,13 +62,18 @@ export function apiFailure(error: unknown) {
   });
 }
 
+/**
+ * CSRF defence for every state-changing request. The Origin header must equal
+ * APP_URL's origin. Browsers always send Origin on cross-origin and on POST/PUT/
+ * PATCH/DELETE requests, so a missing Origin is accepted only when the browser
+ * itself vouches for the request with Sec-Fetch-Site: same-origin.
+ */
 export function assertSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  const url = new URL(request.url);
-  const expectedOrigin = process.env.APP_URL
-    ? new URL(process.env.APP_URL).origin
-    : `${url.protocol}//${request.headers.get("host") ?? url.host}`;
-  if (origin && origin !== expectedOrigin) {
-    throw new OriginError("Origen no permitido");
+  if (origin !== null) {
+    if (origin !== appOrigin()) throw new OriginError("Origen no permitido");
+    return;
   }
+  if (request.headers.get("sec-fetch-site") === "same-origin") return;
+  throw new OriginError("Origen no permitido");
 }

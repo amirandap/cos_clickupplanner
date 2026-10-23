@@ -7,8 +7,102 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Identity. `googleSub` (the OpenID `sub` claim) is the only identity key.
+// The row `legacy-single-user` is created by the multiuser migration when the
+// database already holds single-user data. Its googleSub starts with
+// "pending:" until the first eligible login claims it (see README).
+// ---------------------------------------------------------------------------
+model User {
+  id          String    @id @default(cuid())
+  googleSub   String    @unique
+  email       String
+  name        String?
+  createdAt   DateTime  @default(now())
+  lastLoginAt DateTime?
+
+  settings    UserSettings?
+  credentials UserCredential[]
+  sessions    Session[]
+  flows       OAuthFlow[]
+  tasks       UserTask[]
+  events      CalendarEvent[]
+  links       TaskEventLink[]
+  operations  ScheduleOperation[]
+  syncStates  SyncState[]
+}
+
+// Opaque cookie sessions. Only the SHA-256 of the cookie value is stored.
+model Session {
+  id           String   @id // sha256(cookie token)
+  userId       String
+  createdAt    DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+  expiresAt    DateTime // rolling idle expiry
+  maxExpiresAt DateTime // absolute cap
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Short-lived OAuth state (state, nonce, PKCE verifier). `id` is the SHA-256
+// of a random cookie value, so a callback is only accepted from the browser
+// that started the flow. Calendar flows are additionally bound to a session.
+model OAuthFlow {
+  id           String   @id
+  kind         String // "login" | "calendar"
+  state        String
+  nonce        String?
+  codeVerifier String
+  userId       String?
+  sessionId    String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+// Per-user secrets, encrypted with AES-256-GCM (see src/lib/crypto/tokens.ts).
+// provider: "google_calendar" | "clickup". scheme: how the ClickUp token is
+// sent ("raw" personal token, "bearer" legacy OAuth token).
+model UserCredential {
+  userId          String
+  provider        String
+  accessTokenEnc  String?
+  refreshTokenEnc String?
+  expiresAt       DateTime?
+  scheme          String    @default("raw")
+  scopes          String?
+  revokedAt       DateTime?
+  updatedAt       DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, provider])
+}
+
+model UserSettings {
+  userId          String   @id
+  calendarId      String   @default("primary")
+  listIds         String   @default("")
+  timezone        String   @default("UTC")
+  clickupUserId   String?
+  clickupUsername String?
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Shared cache. Rows are global, but a user only sees tasks listed in UserTask,
+// which is filled from that user's own ClickUp token.
+// ---------------------------------------------------------------------------
 model ClickUpTask {
-  id            String   @id
+  id            String    @id
   title         String
   status        String?
   priority      String?
@@ -17,89 +111,136 @@ model ClickUpTask {
   url           String?
   listId        String?
   rawJson       Json?
-  assignedToMe  Boolean  @default(false)
   remoteUpdated DateTime?
-  syncedAt      DateTime @default(now())
+  syncedAt      DateTime  @default(now())
+
+  users UserTask[]
 
   @@index([remoteUpdated])
 }
 
-model CalendarEvent {
-  id              String   @id
-  calendarId      String
-  title           String
-  startAt         DateTime
-  endAt           DateTime
-  clickupTaskId   String?
-  rawJson         Json?
-  remoteUpdated   DateTime?
-  syncedAt        DateTime @default(now())
+// Which cached tasks a user's own ClickUp token has seen. `archivedAt` is set
+// when this user archived the task, so only they can undo it.
+model UserTask {
+  userId     String
+  taskId     String
+  archivedAt DateTime?
 
-  @@index([clickupTaskId])
-  @@index([startAt, endAt])
+  user User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task ClickUpTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@id([userId, taskId])
+  @@index([taskId])
+}
+
+model CalendarEvent {
+  userId        String
+  id            String
+  calendarId    String
+  title         String
+  startAt       DateTime
+  endAt         DateTime
+  clickupTaskId String?
+  rawJson       Json?
+  remoteUpdated DateTime?
+  syncedAt      DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, id])
+  @@index([userId, clickupTaskId])
+  @@index([userId, startAt, endAt])
 }
 
 model TaskEventLink {
-  id              String   @id @default(cuid())
-  clickupTaskId   String
-  calendarEventId String @unique
-  createdAt       DateTime @default(now())
-  clickupSyncPending Boolean @default(false)
-  dueSyncedStartAt  DateTime?
-  commentedStartAt  DateTime?
+  id                      String    @id @default(cuid())
+  userId                  String
+  clickupTaskId           String
+  calendarEventId         String
+  createdAt               DateTime  @default(now())
+  clickupSyncPending      Boolean   @default(false)
+  dueSyncedStartAt        DateTime?
+  commentedStartAt        DateTime?
   commentAttemptedStartAt DateTime?
-  clickupSyncError   String?
+  clickupSyncError        String?
 
-  @@unique([clickupTaskId, calendarEventId])
-  @@index([calendarEventId])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, calendarEventId])
+  @@unique([userId, clickupTaskId, calendarEventId])
 }
 
 model SyncState {
-  id         String   @id
+  userId     String
+  id         String
   source     String
   cursor     String?
   lastSyncAt DateTime?
-  updatedAt  DateTime @updatedAt
+  updatedAt  DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, id])
 }
 
-model OAuthCredential {
-  provider     String   @id
+// Pre-multiuser plaintext credentials. Read and emptied by
+// prisma/migrate-single-user.ts, never used by the application.
+// Drop this table in a later migration once the script has run everywhere.
+model LegacyOAuthCredential {
+  provider     String    @id
   accessToken  String
   refreshToken String?
   expiresAt    DateTime?
-  updatedAt    DateTime @updatedAt
+  updatedAt    DateTime  @updatedAt
+
+  @@map("OAuthCredential")
 }
 
 // Durable request identity survives retries and deletion of the resulting event.
 model ScheduleOperation {
-  id              String   @id
+  userId          String
+  id              String
   payloadHash     String
-  calendarEventId String   @unique
+  calendarEventId String
   calendarId      String
   clickupTaskId   String
   title           String
   startAt         DateTime
   endAt           DateTime
   savedAt         DateTime?
-  createdAt       DateTime @default(now())
+  createdAt       DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, id])
+  @@unique([userId, calendarEventId])
 }
 
+// Keys are per user ("planner:<userId>").
 model MutationLease {
   key       String   @id
   owner     String
   expiresAt DateTime
 }
 
+// Fixed-window counters, e.g. "sync:<userId>".
+model RateLimit {
+  key         String   @id
+  windowStart DateTime
+  count       Int
+}
+
 // Original conflicting links remain available for audit and recovery. Their
 // pending flag is also carried forward to the surviving canonical link.
 model TaskEventLinkConflict {
-  id                   String   @id
-  clickupTaskId         String
-  calendarEventId      String
-  createdAt            DateTime
-  clickupSyncPending   Boolean
-  dueSyncedStartAt     DateTime?
-  commentedStartAt     DateTime?
-  clickupSyncError     String?
-  archivedAt           DateTime @default(now())
+  id                 String    @id
+  userId             String?
+  clickupTaskId      String
+  calendarEventId    String
+  createdAt          DateTime
+  clickupSyncPending Boolean
+  dueSyncedStartAt   DateTime?
+  commentedStartAt   DateTime?
+  clickupSyncError   String?
+  archivedAt         DateTime  @default(now())
 }

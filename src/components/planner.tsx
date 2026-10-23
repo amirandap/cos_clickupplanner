@@ -13,7 +13,7 @@ import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import { Loader2, X } from "lucide-react";
 import type { PlannerAssignee, PlannerData, PlannerEvent, PlannerTask } from "@/lib/planner/types";
 import { allDayStart, formatDateTimeInput, parseDateTimeInput } from "./planner/dates";
-import { isMutationResult, isSyncResult, jsonRequest, persistCalendarEdit, requestJson } from "./planner/client";
+import { goToLogin, isMutationResult, isSyncResult, jsonRequest, persistCalendarEdit, requestJson } from "./planner/client";
 import { EventModal } from "./planner/event-modal";
 import { TaskPanel } from "./planner/task-panel";
 import { PlannerToolbar, type CalendarView } from "./planner/toolbar";
@@ -25,7 +25,7 @@ type EventPeek = { title: string; time: string; left: number; top: number; below
 
 const INITIAL_SEARCH = typeof window === "undefined" ? "" : window.location.search;
 
-export default function Planner({ initialData }: { initialData: PlannerData }) {
+export default function Planner({ initialData, userEmail }: { initialData: PlannerData; userEmail?: string }) {
   const { data, busy, error, warning, setError, setWarning, loadRange, run, schedule } = usePlannerOperations(initialData);
   const timezone = data.timezone;
   const archivedRef = useRef<string[]>([]);
@@ -411,7 +411,9 @@ export default function Planner({ initialData }: { initialData: PlannerData }) {
       onPrevious={() => calendarRef.current?.getApi().prev()} onNext={() => calendarRef.current?.getApi().next()}
       onToday={() => calendarRef.current?.getApi().today()} onView={changeView}
       onAssignee={(id) => setSelectedAssigneeId((current) => current === id ? "all" : id)}
-      onSync={() => { void run(() => requestJson("/api/sync", jsonRequest("POST"), isSyncResult), closeSelection); }} />
+      onSync={() => { void run(() => requestJson("/api/sync", jsonRequest("POST"), isSyncResult), closeSelection); }}
+      userEmail={userEmail}
+      onLogout={() => { void fetch("/api/auth/logout", { method: "POST" }).finally(goToLogin); }} />
     {error && <div className="error-banner" role="alert"><span>{error}</span><button aria-label="Cerrar error" onClick={() => setError(null)}><X size={16} /></button></div>}
     {warning && <div className="error-banner" role="status"><span>{warning}</span><button aria-label="Cerrar aviso" onClick={() => setWarning(null)}><X size={16} /></button></div>}
     {(rescheduleId || scheduleTaskId) && <SelectionBanner taskTitle={schedulingTask?.title} timezone={timezone}

@@ -1,20 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authorizeRequest } from "@/lib/auth";
+import { readCookie, sessionCookieName } from "@/lib/auth/cookies";
+
+// The proxy only checks that a session cookie exists, which is a cheap first
+// gate. Handlers and pages validate it against the database (requireUser).
+const PUBLIC_PATHS = ["/login", "/api/auth/login"];
+
+function isPublic(pathname: string) {
+  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+}
+
+/** Never active in a production build, whatever USE_MOCK_DATA says. */
+function mockBypass() {
+  return process.env.USE_MOCK_DATA === "true" && process.env.NODE_ENV !== "production";
+}
 
 export function proxy(request: NextRequest) {
-  const authorization = authorizeRequest(request);
-  if (authorization.allowed) return NextResponse.next();
-
-  const headers: Record<string, string> = { "Cache-Control": "no-store" };
-  if (authorization.status === 401) {
-    headers["WWW-Authenticate"] = 'Basic realm="ClickUp Planner", charset="UTF-8"';
+  const { pathname } = request.nextUrl;
+  if (isPublic(pathname) || mockBypass() || readCookie(request.headers.get("cookie"), sessionCookieName())) {
+    return NextResponse.next();
   }
-  const error = authorization.status === 401
-    ? "Se requiere autenticación."
-    : "El acceso a esta instancia todavía no está configurado.";
-  return request.nextUrl.pathname.startsWith("/api/")
-    ? NextResponse.json({ error }, { status: authorization.status, headers })
-    : new NextResponse(error, { status: authorization.status, headers });
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.json({ error: "Se requiere autenticación." }, { status: 401, headers: { "Cache-Control": "no-store" } });
+  }
+  // Behind a reverse proxy request.url carries the internal host, so prefer APP_URL.
+  const base = process.env.APP_URL?.trim() || request.url;
+  return NextResponse.redirect(new URL("/login", base), { headers: { "Cache-Control": "no-store" } });
 }
 
 export const config = {
