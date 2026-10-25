@@ -158,3 +158,19 @@ test("removing cancelled events reads the calendar cache a fixed number of times
     assert.ok(cacheScans <= 2, `la caché se leyó ${cacheScans} veces`);
   } finally { await f.cleanup(); }
 });
+
+test("a full Google snapshot with thousands of events still removes the absent cached rows", async () => {
+  const f = await fixture();
+  try {
+    await f.event("gone");
+    await f.db.syncState.create({ data: { id: "google:calendar-a", source: "google", cursor: "expired" } });
+    f.state.expired = true;
+    f.state.events = Array.from({ length: 40_000 }, (_, n) => ({
+      id: `bulk-${n}`, summary: "x", updated: "2026-10-01T00:00:00Z",
+      start: { dateTime: "2026-10-16T09:00:00Z" }, end: { dateTime: "2026-10-16T09:00:00Z" },
+    }));
+    await f.sync.syncGoogle();
+    assert.equal(await f.db.calendarEvent.count({ where: { id: "gone" } }), 0);
+    assert.equal(await f.db.calendarEvent.count({ where: { calendarId: "calendar-a" } }), 40_000);
+  } finally { await f.cleanup(); }
+});

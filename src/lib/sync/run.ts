@@ -58,6 +58,7 @@ export async function syncClickUp() {
 }
 
 const TX_TIMEOUT_MS = 30_000;
+const DELETE_BATCH = 5_000;
 // Un snapshot completo del calendario escribe miles de filas (7 671 eventos hoy).
 const FULL_SNAPSHOT_TX_TIMEOUT_MS = 180_000;
 
@@ -170,10 +171,15 @@ export async function syncGoogle() {
         });
       }
       if (fullSnapshot) {
-        const missing = await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar, id: { notIn: keptIds } }, select: { id: true } });
-        const missingIds = missing.map((event) => event.id);
-        await tx.taskEventLink.deleteMany({ where: { calendarEventId: { in: missingIds } } });
-        await tx.calendarEvent.deleteMany({ where: { id: { in: missingIds } } });
+        // `notIn` con miles de ids supera el límite de parámetros de Prisma/SQLite y no se puede dividir: se filtra en memoria.
+        const kept = new Set(keptIds);
+        const cached = await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, select: { id: true } });
+        const missingIds = cached.map((event) => event.id).filter((id) => !kept.has(id));
+        for (let start = 0; start < missingIds.length; start += DELETE_BATCH) {
+          const batch = missingIds.slice(start, start + DELETE_BATCH);
+          await tx.taskEventLink.deleteMany({ where: { calendarEventId: { in: batch } } });
+          await tx.calendarEvent.deleteMany({ where: { id: { in: batch } } });
+        }
       }
       await tx.syncState.upsert({ where: { id }, create: { id, source: "google", cursor: result.nextSyncToken, lastSyncAt: syncedAt }, update: { cursor: result.nextSyncToken, lastSyncAt: syncedAt } });
       await tx.syncState.upsert({ where: { id: "google:active" }, create: { id: "google:active", source: "google", cursor: selectedCalendar }, update: { cursor: selectedCalendar } });
