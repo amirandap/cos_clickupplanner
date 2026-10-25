@@ -57,6 +57,10 @@ export async function syncClickUp() {
   });
 }
 
+const TX_TIMEOUT_MS = 30_000;
+// Un snapshot completo del calendario escribe miles de filas (7 671 eventos hoy).
+const FULL_SNAPSHOT_TX_TIMEOUT_MS = 180_000;
+
 type CacheIndex = {
   removalsFor(eventId: string): string[];
   remember(eventId: string, recurringEventId?: string): void;
@@ -121,6 +125,11 @@ export async function syncGoogle() {
         index: null as CacheIndex | null,
         async get() { return this.index ??= buildCacheIndex(await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, select: { id: true, rawJson: true } })); },
       };
+      // Lecturas en bloque: un snapshot completo trae miles de eventos y una consulta por evento no cabe en la transacción.
+      const eventIds = result.items.map((event) => event.id);
+      const existingById = new Map((await tx.calendarEvent.findMany({ where: { id: { in: eventIds } } })).map((row) => [row.id, row]));
+      const linkById = new Map((await tx.taskEventLink.findMany({ where: { calendarEventId: { in: eventIds } } })).map((link) => [link.calendarEventId, link]));
+      const taskById = new Map<string, Awaited<ReturnType<typeof tx.clickUpTask.findUnique>>>();
       for (const event of result.items) {
         const cancelledException = event.status === "cancelled" && Boolean(event.recurringEventId);
         if (event.status === "cancelled" && !cancelledException) {
@@ -130,7 +139,7 @@ export async function syncGoogle() {
           cache.index?.forget(removedIds);
           continue;
         }
-        const existing = await tx.calendarEvent.findUnique({ where: { id: event.id } });
+        const existing = existingById.get(event.id) ?? null;
         const startAt = event.start ? googleEventDate(event.start)
           : event.originalStartTime ? googleEventDate(event.originalStartTime) : existing?.startAt;
         if (!startAt) throw new Error("Evento sin fecha: no se puede reconciliar la sincronización");
@@ -140,13 +149,14 @@ export async function syncGoogle() {
         if (updated && existing?.calendarId === selectedCalendar && existing.remoteUpdated && updated < existing.remoteUpdated) continue;
         const properties = event.extendedProperties?.private;
         const candidateId = properties?.plannerLinkedClickupTaskId ?? (properties?.source === "planner" ? properties.clickupTaskId : null);
-        const task = candidateId ? await tx.clickUpTask.findUnique({ where: { id: candidateId } }) : null;
+        if (candidateId && !taskById.has(candidateId)) taskById.set(candidateId, await tx.clickUpTask.findUnique({ where: { id: candidateId } }));
+        const task = candidateId ? taskById.get(candidateId) ?? null : null;
         const taskId = !cancelledException && isTaskInScope(task) ? candidateId ?? null : null;
         const data = { calendarId: selectedCalendar, title: event.summary ?? "(Sin título)", startAt, endAt,
           clickupTaskId: taskId, rawJson: toJson(event), remoteUpdated: updated, syncedAt };
         await tx.calendarEvent.upsert({ where: { id: event.id }, create: { id: event.id, ...data }, update: data });
         cache.index?.remember(event.id, event.recurringEventId);
-        const previousLink = await tx.taskEventLink.findUnique({ where: { calendarEventId: event.id } });
+        const previousLink = linkById.get(event.id) ?? null;
         if (!taskId) {
           await tx.taskEventLink.deleteMany({ where: { calendarEventId: event.id } });
           continue;
@@ -167,7 +177,7 @@ export async function syncGoogle() {
       }
       await tx.syncState.upsert({ where: { id }, create: { id, source: "google", cursor: result.nextSyncToken, lastSyncAt: syncedAt }, update: { cursor: result.nextSyncToken, lastSyncAt: syncedAt } });
       await tx.syncState.upsert({ where: { id: "google:active" }, create: { id: "google:active", source: "google", cursor: selectedCalendar }, update: { cursor: selectedCalendar } });
-    }, { timeout: 30_000 });
+    }, { timeout: fullSnapshot ? FULL_SNAPSHOT_TX_TIMEOUT_MS : TX_TIMEOUT_MS });
     return result.items.length;
   });
 }
