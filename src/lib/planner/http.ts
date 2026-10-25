@@ -16,6 +16,8 @@ export function apiFailure(error: unknown) {
     error.status >= 400 && error.status <= 599
     ? error.status
     : error instanceof SyntaxError ? 400 : 500;
+  // Los 5xx devuelven un mensaje genérico al cliente; sin este log la causa real no queda en ningún sitio.
+  if (status >= 500) console.error("planner api error:", error);
   const message = error instanceof Error && "status" in error
     ? error.message
     : status === 400 ? "La solicitud no es válida." : "No se pudo completar la operación.";

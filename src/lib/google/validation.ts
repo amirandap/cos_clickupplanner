@@ -54,7 +54,7 @@ export function validateGoogleEvent(value: unknown): RemoteCalendarEvent {
   if (value.end !== undefined) result.end = eventTime(value.end);
   if (value.originalStartTime !== undefined) result.originalStartTime = eventTime(value.originalStartTime);
   if (value.status !== "cancelled") {
-    if (!result.start || !result.end || googleEventDate(result.end) <= googleEventDate(result.start) || Boolean(result.start.date) !== Boolean(result.end.date)) throw new ProviderPayloadError("Google", "intervalo de fechas inválido");
+    if (!result.start || !result.end || googleEventDate(result.end) < googleEventDate(result.start) || Boolean(result.start.date) !== Boolean(result.end.date)) throw new ProviderPayloadError("Google", "intervalo de fechas inválido");
   }
   if (value.recurringEventId !== undefined && !result.originalStartTime) throw new ProviderPayloadError("Google", "originalStartTime");
   if (value.recurrence !== undefined) {

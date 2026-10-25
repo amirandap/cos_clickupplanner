@@ -57,6 +57,43 @@ export async function syncClickUp() {
   });
 }
 
+type CacheIndex = {
+  removalsFor(eventId: string): string[];
+  remember(eventId: string, recurringEventId?: string): void;
+  forget(ids: string[]): void;
+};
+
+/** Ids cacheados y sus excepciones por serie, para borrar una serie cancelada junto con sus instancias. */
+function buildCacheIndex(rows: { id: string; rawJson: unknown }[]): CacheIndex {
+  const ids = new Set<string>();
+  const parentOf = new Map<string, string>();
+  const children = new Map<string, Set<string>>();
+  const index: CacheIndex = {
+    remember(eventId, recurringEventId) {
+      ids.add(eventId);
+      const previous = parentOf.get(eventId);
+      if (previous && previous !== recurringEventId) children.get(previous)?.delete(eventId);
+      if (!recurringEventId) { parentOf.delete(eventId); return; }
+      parentOf.set(eventId, recurringEventId);
+      children.set(recurringEventId, (children.get(recurringEventId) ?? new Set()).add(eventId));
+    },
+    removalsFor(eventId) { return [...(ids.has(eventId) ? [eventId] : []), ...(children.get(eventId) ?? [])]; },
+    forget(removed) {
+      for (const id of removed) {
+        ids.delete(id);
+        const parent = parentOf.get(id);
+        if (parent) children.get(parent)?.delete(id);
+        parentOf.delete(id);
+      }
+    },
+  };
+  for (const row of rows) {
+    const raw = row.rawJson && typeof row.rawJson === "object" && !Array.isArray(row.rawJson) ? row.rawJson as { recurringEventId?: unknown } : null;
+    index.remember(row.id, typeof raw?.recurringEventId === "string" ? raw.recurringEventId : undefined);
+  }
+  return index;
+}
+
 export async function syncGoogle() {
   if (process.env.USE_MOCK_DATA === "true") return 0;
   return withMutationLock("planner", async () => {
@@ -79,15 +116,18 @@ export async function syncGoogle() {
     const syncedAt = new Date();
     await db.$transaction(async (tx) => {
       const keptIds: string[] = [];
+      // Índice de la caché del calendario: se lee una sola vez (y solo si hay cancelaciones) en lugar de una por evento.
+      const cache = {
+        index: null as CacheIndex | null,
+        async get() { return this.index ??= buildCacheIndex(await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, select: { id: true, rawJson: true } })); },
+      };
       for (const event of result.items) {
         const cancelledException = event.status === "cancelled" && Boolean(event.recurringEventId);
         if (event.status === "cancelled" && !cancelledException) {
-          const cached = await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar } });
-          const removedIds = cached.filter((row) => row.id === event.id || (
-            row.rawJson && typeof row.rawJson === "object" && !Array.isArray(row.rawJson) && row.rawJson.recurringEventId === event.id
-          )).map((row) => row.id);
+          const removedIds = (await cache.get()).removalsFor(event.id);
           await tx.taskEventLink.deleteMany({ where: { calendarEventId: { in: removedIds } } });
           await tx.calendarEvent.deleteMany({ where: { id: { in: removedIds } } });
+          cache.index?.forget(removedIds);
           continue;
         }
         const existing = await tx.calendarEvent.findUnique({ where: { id: event.id } });
@@ -105,6 +145,7 @@ export async function syncGoogle() {
         const data = { calendarId: selectedCalendar, title: event.summary ?? "(Sin título)", startAt, endAt,
           clickupTaskId: taskId, rawJson: toJson(event), remoteUpdated: updated, syncedAt };
         await tx.calendarEvent.upsert({ where: { id: event.id }, create: { id: event.id, ...data }, update: data });
+        cache.index?.remember(event.id, event.recurringEventId);
         const previousLink = await tx.taskEventLink.findUnique({ where: { calendarEventId: event.id } });
         if (!taskId) {
           await tx.taskEventLink.deleteMany({ where: { calendarEventId: event.id } });

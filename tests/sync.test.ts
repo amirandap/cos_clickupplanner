@@ -132,3 +132,27 @@ test("a task missed by moving offset pages is revalidated before deleting its ca
     assert.equal((await f.db.calendarEvent.findUnique({ where: { id: "event-a" } }))?.clickupTaskId, "task-a");
   } finally { await f.cleanup(); }
 });
+
+test("removing cancelled events reads the calendar cache once, not once per cancelled event", async () => {
+  const f = await fixture();
+  try {
+    await f.event("series"); await f.event("solo-1"); await f.event("solo-2"); await f.event("keep");
+    await f.db.syncState.create({ data: { id: "google:calendar-a", source: "google", cursor: "saved" } }); // sync incremental, no snapshot completo
+    for (const id of ["child-1", "child-2"]) {
+      await f.db.calendarEvent.create({ data: { id, calendarId: "calendar-a", title: id, startAt: new Date("2026-10-17T09:00:00Z"),
+        endAt: new Date("2026-10-17T10:00:00Z"), rawJson: { recurringEventId: "series" } } });
+    }
+    const original = f.db.$transaction.bind(f.db) as unknown as (run: (tx: typeof f.db) => Promise<unknown>, options?: unknown) => Promise<unknown>;
+    let cacheScans = 0;
+    (f.db as unknown as { $transaction: unknown }).$transaction = (run: (tx: typeof f.db) => Promise<unknown>, options?: unknown) => original((tx) => run(new Proxy(tx, {
+      get: (target, key) => key !== "calendarEvent" ? Reflect.get(target, key) : new Proxy(target.calendarEvent, {
+        get: (model, method) => method !== "findMany" ? Reflect.get(model, method) : (...args: unknown[]) => { cacheScans++; return (model.findMany as (...a: unknown[]) => unknown)(...args); },
+      }),
+    })), options);
+    f.state.events = ["series", "solo-1", "solo-2"].map((id) => ({ id, status: "cancelled" }));
+    await f.sync.syncGoogle();
+    const left = (await f.db.calendarEvent.findMany({ select: { id: true } })).map((row) => row.id).sort();
+    assert.deepEqual(left, ["keep"]);
+    assert.ok(cacheScans <= 1, `la caché se leyó ${cacheScans} veces`);
+  } finally { await f.cleanup(); }
+});
