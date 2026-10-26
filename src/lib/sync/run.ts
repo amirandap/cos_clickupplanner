@@ -57,6 +57,48 @@ export async function syncClickUp() {
   });
 }
 
+const TX_TIMEOUT_MS = 30_000;
+const DELETE_BATCH = 5_000;
+// Un snapshot completo del calendario escribe miles de filas (7 671 eventos hoy).
+const FULL_SNAPSHOT_TX_TIMEOUT_MS = 180_000;
+
+type CacheIndex = {
+  removalsFor(eventId: string): string[];
+  remember(eventId: string, recurringEventId?: string): void;
+  forget(ids: string[]): void;
+};
+
+/** Ids cacheados y sus excepciones por serie, para borrar una serie cancelada junto con sus instancias. */
+function buildCacheIndex(rows: { id: string; rawJson: unknown }[]): CacheIndex {
+  const ids = new Set<string>();
+  const parentOf = new Map<string, string>();
+  const children = new Map<string, Set<string>>();
+  const index: CacheIndex = {
+    remember(eventId, recurringEventId) {
+      ids.add(eventId);
+      const previous = parentOf.get(eventId);
+      if (previous && previous !== recurringEventId) children.get(previous)?.delete(eventId);
+      if (!recurringEventId) { parentOf.delete(eventId); return; }
+      parentOf.set(eventId, recurringEventId);
+      children.set(recurringEventId, (children.get(recurringEventId) ?? new Set()).add(eventId));
+    },
+    removalsFor(eventId) { return [...(ids.has(eventId) ? [eventId] : []), ...(children.get(eventId) ?? [])]; },
+    forget(removed) {
+      for (const id of removed) {
+        ids.delete(id);
+        const parent = parentOf.get(id);
+        if (parent) children.get(parent)?.delete(id);
+        parentOf.delete(id);
+      }
+    },
+  };
+  for (const row of rows) {
+    const raw = row.rawJson && typeof row.rawJson === "object" && !Array.isArray(row.rawJson) ? row.rawJson as { recurringEventId?: unknown } : null;
+    index.remember(row.id, typeof raw?.recurringEventId === "string" ? raw.recurringEventId : undefined);
+  }
+  return index;
+}
+
 export async function syncGoogle() {
   if (process.env.USE_MOCK_DATA === "true") return 0;
   return withMutationLock("planner", async () => {
@@ -79,18 +121,26 @@ export async function syncGoogle() {
     const syncedAt = new Date();
     await db.$transaction(async (tx) => {
       const keptIds: string[] = [];
+      // Índice de la caché del calendario: se lee una sola vez (y solo si hay cancelaciones) en lugar de una por evento.
+      const cache = {
+        index: null as CacheIndex | null,
+        async get() { return this.index ??= buildCacheIndex(await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, select: { id: true, rawJson: true } })); },
+      };
+      // Lecturas en bloque: un snapshot completo trae miles de eventos y una consulta por evento no cabe en la transacción.
+      const eventIds = result.items.map((event) => event.id);
+      const existingById = new Map((await tx.calendarEvent.findMany({ where: { id: { in: eventIds } } })).map((row) => [row.id, row]));
+      const linkById = new Map((await tx.taskEventLink.findMany({ where: { calendarEventId: { in: eventIds } } })).map((link) => [link.calendarEventId, link]));
+      const taskById = new Map<string, Awaited<ReturnType<typeof tx.clickUpTask.findUnique>>>();
       for (const event of result.items) {
         const cancelledException = event.status === "cancelled" && Boolean(event.recurringEventId);
         if (event.status === "cancelled" && !cancelledException) {
-          const cached = await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar } });
-          const removedIds = cached.filter((row) => row.id === event.id || (
-            row.rawJson && typeof row.rawJson === "object" && !Array.isArray(row.rawJson) && row.rawJson.recurringEventId === event.id
-          )).map((row) => row.id);
+          const removedIds = (await cache.get()).removalsFor(event.id);
           await tx.taskEventLink.deleteMany({ where: { calendarEventId: { in: removedIds } } });
           await tx.calendarEvent.deleteMany({ where: { id: { in: removedIds } } });
+          cache.index?.forget(removedIds);
           continue;
         }
-        const existing = await tx.calendarEvent.findUnique({ where: { id: event.id } });
+        const existing = existingById.get(event.id) ?? null;
         const startAt = event.start ? googleEventDate(event.start)
           : event.originalStartTime ? googleEventDate(event.originalStartTime) : existing?.startAt;
         if (!startAt) throw new Error("Evento sin fecha: no se puede reconciliar la sincronización");
@@ -100,12 +150,14 @@ export async function syncGoogle() {
         if (updated && existing?.calendarId === selectedCalendar && existing.remoteUpdated && updated < existing.remoteUpdated) continue;
         const properties = event.extendedProperties?.private;
         const candidateId = properties?.plannerLinkedClickupTaskId ?? (properties?.source === "planner" ? properties.clickupTaskId : null);
-        const task = candidateId ? await tx.clickUpTask.findUnique({ where: { id: candidateId } }) : null;
+        if (candidateId && !taskById.has(candidateId)) taskById.set(candidateId, await tx.clickUpTask.findUnique({ where: { id: candidateId } }));
+        const task = candidateId ? taskById.get(candidateId) ?? null : null;
         const taskId = !cancelledException && isTaskInScope(task) ? candidateId ?? null : null;
         const data = { calendarId: selectedCalendar, title: event.summary ?? "(Sin título)", startAt, endAt,
           clickupTaskId: taskId, rawJson: toJson(event), remoteUpdated: updated, syncedAt };
         await tx.calendarEvent.upsert({ where: { id: event.id }, create: { id: event.id, ...data }, update: data });
-        const previousLink = await tx.taskEventLink.findUnique({ where: { calendarEventId: event.id } });
+        cache.index?.remember(event.id, event.recurringEventId);
+        const previousLink = linkById.get(event.id) ?? null;
         if (!taskId) {
           await tx.taskEventLink.deleteMany({ where: { calendarEventId: event.id } });
           continue;
@@ -119,14 +171,19 @@ export async function syncGoogle() {
         });
       }
       if (fullSnapshot) {
-        const missing = await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar, id: { notIn: keptIds } }, select: { id: true } });
-        const missingIds = missing.map((event) => event.id);
-        await tx.taskEventLink.deleteMany({ where: { calendarEventId: { in: missingIds } } });
-        await tx.calendarEvent.deleteMany({ where: { id: { in: missingIds } } });
+        // `notIn` con miles de ids supera el límite de parámetros de Prisma/SQLite y no se puede dividir: se filtra en memoria.
+        const kept = new Set(keptIds);
+        const cached = await tx.calendarEvent.findMany({ where: { calendarId: selectedCalendar }, select: { id: true } });
+        const missingIds = cached.map((event) => event.id).filter((id) => !kept.has(id));
+        for (let start = 0; start < missingIds.length; start += DELETE_BATCH) {
+          const batch = missingIds.slice(start, start + DELETE_BATCH);
+          await tx.taskEventLink.deleteMany({ where: { calendarEventId: { in: batch } } });
+          await tx.calendarEvent.deleteMany({ where: { id: { in: batch } } });
+        }
       }
       await tx.syncState.upsert({ where: { id }, create: { id, source: "google", cursor: result.nextSyncToken, lastSyncAt: syncedAt }, update: { cursor: result.nextSyncToken, lastSyncAt: syncedAt } });
       await tx.syncState.upsert({ where: { id: "google:active" }, create: { id: "google:active", source: "google", cursor: selectedCalendar }, update: { cursor: selectedCalendar } });
-    }, { timeout: 30_000 });
+    }, { timeout: fullSnapshot ? FULL_SNAPSHOT_TX_TIMEOUT_MS : TX_TIMEOUT_MS });
     return result.items.length;
   });
 }

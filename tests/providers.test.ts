@@ -76,3 +76,12 @@ test("unsafe ClickUp comment POST is not retried after an ambiguous network fail
   await assert.rejects(clickup().createRemoteTaskComment("task-a", "Comment"));
   assert.equal(calls, 1);
 });
+
+test("Google accepts zero-length events but still rejects an end before the start", async (t) => {
+  const zero = { id: "zero1", summary: "Recordatorio", start: { dateTime: "2026-10-16T10:00:00Z" }, end: { dateTime: "2026-10-16T10:00:00Z" } };
+  t.mock.method(globalThis, "fetch", async () => Response.json({ items: [zero], nextSyncToken: "ok" }));
+  assert.equal((await google().listRemoteEvents()).items[0].id, "zero1");
+  const backwards = { id: "back1", start: { dateTime: "2026-10-16T11:00:00Z" }, end: { dateTime: "2026-10-16T10:00:00Z" } };
+  t.mock.method(globalThis, "fetch", async () => Response.json({ items: [backwards], nextSyncToken: "bad" }));
+  await assert.rejects(google().listRemoteEvents(), /intervalo de fechas inválido/);
+});
